@@ -444,9 +444,9 @@ with gr.Blocks() as demo:
                 visible=False,
             )
             eval_mode_selector = gr.Dropdown(
-                choices=["自定义问题", "选择题", "代码"],
+                choices=["随意回复", "选择题", "代码"],
                 label="选择评估类型",
-                value="自定义问题",
+                value="随意回复",
             )
             bmk_using_init_state_checkbox.change(
                 lambda x: gr.update(visible=x),
@@ -643,7 +643,6 @@ with gr.Blocks() as demo:
                 with gr.Row():
                     start_benchmark_btn = gr.Button("开始基准测试")
                     stop_benchmark_btn = gr.Button("停止")
-                    
 
                 benchmark_output = gr.Textbox(
                     label="基准测试结果", lines=15, interactive=True
@@ -743,7 +742,7 @@ with gr.Blocks() as demo:
                 )
 
             # 处理模式切换的函数
-            def switch_mode_bmk(choice):
+            def switch_mode_eval(choice):
                 if choice == "自定义问题":
                     return (
                         gr.Column(visible=True),
@@ -765,7 +764,7 @@ with gr.Blocks() as demo:
 
             # 绑定模式切换事件
             eval_mode_selector.change(
-                fn=switch_mode_bmk,
+                fn=switch_mode_eval,
                 inputs=eval_mode_selector,
                 outputs=[
                     free_chat_section,
