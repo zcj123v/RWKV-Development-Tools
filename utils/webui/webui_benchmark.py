@@ -8,6 +8,7 @@ from benchmark.human_eval import HumanEvalBenchmark
 import os
 from config import global_config
 import concurrent.futures
+import time
 
 # 全局变量用于控制基准测试状态
 is_stopped = False
@@ -293,3 +294,10 @@ def run_humaneval(
     with open(res_fp, "w", encoding="utf-8") as f:
         f.write(json.dumps(results, ensure_ascii=False))
     total_str += f"==============================================\n结果已保存\n"
+
+
+def save_question_list(question_list, save_dir):
+    time_str = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
+    save_fp = os.path.join(save_dir, f"question_list_{time_str}.json")
+    with open(save_fp, "w", encoding="utf-8") as f:
+        f.write(json.dumps(question_list, ensure_ascii=False))
