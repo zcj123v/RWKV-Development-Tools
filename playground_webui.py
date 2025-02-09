@@ -27,12 +27,13 @@ from utils.webui.webui_api import (
     save_api_hist,
     load_api_hist,
 )
-from utils.webui.webui_utils import save_user_preference,load_user_preference
+from utils.webui.webui_utils import save_user_preference, load_user_preference
 from utils.webui.webui_benchmark import (
     run_benchmark,
     stop_benchmark,
     run_mmlu,
     run_humaneval,
+    save_question_list
 )
 import json
 from functools import partial
@@ -79,7 +80,9 @@ try:
         if os.path.isdir(item_path):
             mmlu_folders.append(item_path)
 except:
-    print("waring: mmlu数据集所在目录 (config.webui.benchmark.mmlu_dir)不存在！请在configs/webui.json中设置。")
+    print(
+        "waring: mmlu数据集所在目录 (config.webui.benchmark.mmlu_dir)不存在！请在configs/webui.json中设置。"
+    )
 bmk_question_DIR = global_config.webui.benchmark.questions_dir
 try:
     for root, dirs, files in os.walk(bmk_question_DIR):
@@ -87,7 +90,9 @@ try:
             if file.endswith(".json"):
                 bmk_question_dirs.append(os.path.join(root, file))
 except:
-    print("waring: 问题集所在目录 (config.webui.benchmark.questions_dir)不存在！请在configs/webui.json中设置。")
+    print(
+        "waring: 问题集所在目录 (config.webui.benchmark.questions_dir)不存在！请在configs/webui.json中设置。"
+    )
 api_hist_DIR = global_config.webui.api_hist_dir
 try:
     for root, dirs, files in os.walk(api_hist_DIR):
@@ -95,7 +100,9 @@ try:
             if file.endswith(".json"):
                 api_hist_dirs.append(os.path.join(root, file))
 except:
-    print("waring: api前端保存历史记录所在目录 (config.webui.api_hist_dir)不存在！请在configs/webui.json中设置。")
+    print(
+        "waring: api前端保存历史记录所在目录 (config.webui.api_hist_dir)不存在！请在configs/webui.json中设置。"
+    )
 
 # Gradio界面
 with gr.Blocks() as demo:
@@ -443,10 +450,10 @@ with gr.Blocks() as demo:
                 interactive=True,
                 visible=False,
             )
-            eval_mode_selector = gr.Dropdown(
-                choices=["随意回复", "选择题", "代码"],
+            bmk_mode_selector = gr.Dropdown(
+                choices=["自定义问题", "选择题", "代码"],
                 label="选择评估类型",
-                value="随意回复",
+                value="自定义问题",
             )
             bmk_using_init_state_checkbox.change(
                 lambda x: gr.update(visible=x),
@@ -643,11 +650,16 @@ with gr.Blocks() as demo:
                 with gr.Row():
                     start_benchmark_btn = gr.Button("开始基准测试")
                     stop_benchmark_btn = gr.Button("停止")
+                    bmk_save_question_btn = gr.Button("保存问题集")
 
                 benchmark_output = gr.Textbox(
                     label="基准测试结果", lines=15, interactive=True
                 )
-
+                
+                bmk_save_question_btn.click(
+                    partial(save_question_list, question_list, bmk_question_DIR),
+                    outputs=[benchmark_output],
+                )
                 start_benchmark_btn.click(
                     partial(run_benchmark, agent, question_list),
                     (
@@ -742,7 +754,7 @@ with gr.Blocks() as demo:
                 )
 
             # 处理模式切换的函数
-            def switch_mode_eval(choice):
+            def switch_mode_bmk(choice):
                 if choice == "自定义问题":
                     return (
                         gr.Column(visible=True),
@@ -763,9 +775,9 @@ with gr.Blocks() as demo:
                     )
 
             # 绑定模式切换事件
-            eval_mode_selector.change(
-                fn=switch_mode_eval,
-                inputs=eval_mode_selector,
+            bmk_mode_selector.change(
+                fn=switch_mode_bmk,
+                inputs=bmk_mode_selector,
                 outputs=[
                     free_chat_section,
                     choice_question_section,
@@ -1274,33 +1286,54 @@ with gr.Blocks() as demo:
         ],
     )
     save_preference_modules = [
-        sender_name_input, replier_name_input,
-        temp_input, top_p_input,
-        presence_penalty_input, frequency_penalty_input,
+        sender_name_input,
+        replier_name_input,
+        temp_input,
+        top_p_input,
+        presence_penalty_input,
+        frequency_penalty_input,
         decay_penalty_input,
-        usr_sp_token_dropdown, bot_sp_token_dropdown,
-        bmk_temp_input, bmk_top_p_input,
-        bmk_presence_penalty_input, bmk_frequency_penalty_input,
+        usr_sp_token_dropdown,
+        bot_sp_token_dropdown,
+        bmk_temp_input,
+        bmk_top_p_input,
+        bmk_presence_penalty_input,
+        bmk_frequency_penalty_input,
         bmk_penalty_decay_input,
-        bmk_using_init_state_checkbox, bmk_begin_with_state_dir_input,
-        api_base_input, api_key_input, api_model_input,
-        api_sender_name_input, api_bot_name_input,
-        api_temp_input, api_top_p_input,
-        api_presence_penalty_input, api_frequency_penalty_input,
+        bmk_using_init_state_checkbox,
+        bmk_begin_with_state_dir_input,
+        api_base_input,
+        api_key_input,
+        api_model_input,
+        api_sender_name_input,
+        api_bot_name_input,
+        api_temp_input,
+        api_top_p_input,
+        api_presence_penalty_input,
+        api_frequency_penalty_input,
         ollr_data_folder_input,
-        ollr_use_init_state_checkbox, ollr_init_state_path_input,
-        ollr_train_epoch_input, ollr_batch_size_input,
-        ollr_n_save_ckpt_input, ollr_ctx_len_input,
-        ollr_multi_scale_alpha_input, ollr_keep_states_mode_dropdown,
-        fllr_dataset_list_input, fllr_epoch_input,
-        fllr_batch_size_input, fllr_n_save_ckpt_epoch_input,
-        fllr_use_n_save_ckpt_step_checkbox, fllr_n_save_ckpt_step_input,
-        rl_dataset_list, rl_epoch_input, rl_n_use_max_choices_input
+        ollr_use_init_state_checkbox,
+        ollr_init_state_path_input,
+        ollr_train_epoch_input,
+        ollr_batch_size_input,
+        ollr_n_save_ckpt_input,
+        ollr_ctx_len_input,
+        ollr_multi_scale_alpha_input,
+        ollr_keep_states_mode_dropdown,
+        fllr_dataset_list_input,
+        fllr_epoch_input,
+        fllr_batch_size_input,
+        fllr_n_save_ckpt_epoch_input,
+        fllr_use_n_save_ckpt_step_checkbox,
+        fllr_n_save_ckpt_step_input,
+        rl_dataset_list,
+        rl_epoch_input,
+        rl_n_use_max_choices_input,
     ]
     if not os.path.exists(save_preference_dir):
         demo.load(
             fn=partial(save_user_preference, save_preference_dir),
-            inputs=save_preference_modules
+            inputs=save_preference_modules,
         )
 
     for gr_module in save_preference_modules:
