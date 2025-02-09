@@ -1,0 +1,47 @@
+#+title: Web APP端
+
+说明：本项目基于clojurescript+reagent+datascript,实现了声明式prompt模板工程
+
+
+
+* 初始化安装：切换到WebAPP文件夹下面
+首先执行
+* 初始化
+```cmd
+$ npm install .
+```
+
+或者
+```cmd
+yarn add.
+```
+
+* 启动服务
+
+```cmd
+
+$  shadow-cljs watch app
+
+```
+
+
+* 项目说明
+
+** 项目结构
+RWKV-Development-Tools/WebApp/src/blackfog:
+ - api.cljs ;; api 管理
+ - app_state ;; 全局state管理
+ - components ;; 前端组件化
+ - core.cljs ;; APP核心
+ - db ;; 前端数据库（待施工）
+ - dsl ;; 声明式prmpt dsl 的style实现
+ - dsl_protocol ;; 声明式 prompt dsl 的核心实现
+ - handlers ;; 辅助函数
+ - local_storage.cljs ;; 本地存储
+ - nexus ;; 智能体交流协议（核心逻辑）
+ - pages ;; 可视化页面设计
+ - persets ;; 预设
+ - utils ;; 工具类
+
+
+* 对于新手来说，直接看persets/personas/assistant.cljs这个文件，这是一个初始化的模板入门，应该能应付最简单的场景。

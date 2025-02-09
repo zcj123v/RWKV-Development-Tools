@@ -1,0 +1,23 @@
+{
+  "name": "llm-chat-cljs",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "shadow-cljs watch app",
+    "build": "shadow-cljs release app"
+  },
+  "dependencies": {
+    "bulma": "^1.0.2",
+    "crypto-js": "^4.2.0",
+    "events": "^3.3.0",
+    "is-arguments": "^1.1.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "readline": "^1.3.0",
+    "scheduler": "^0.23.2",
+    "util": "^0.12.5",
+    "yarn": "^1.22.22"
+  },
+  "devDependencies": {
+    "shadow-cljs": "^2.24.1"
+  }
+}
