@@ -1,14 +1,15 @@
 from config import global_config
+import os
 
 config = (
     global_config.infer_service_config
-    if global_config.now == "infer_service"
+    if os.environ["WORKING_MODE"] == "infer_service"
     else (
         global_config.train_service_config
-        if global_config.now == "train_service"
+        if os.environ["WORKING_MODE"] == "train_service"
         else (
             global_config.pretrain_script_config
-            if global_config.now == "pretrain"
+            if os.environ["WORKING_MODE"] == "pretrain"
             else None
         )
     )

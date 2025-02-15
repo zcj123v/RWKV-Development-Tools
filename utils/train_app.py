@@ -1,11 +1,7 @@
-from config import global_config
 import os
+from config import global_config
 
-global_config.now = "train_service"
 train_config = global_config.train_service_config
-
-os.environ["RWKV_HEAD_SIZE_A"] = str(train_config.model.head_size)
-os.environ["RWKV_CTXLEN"] = str(train_config.model.ctx_len)
 
 import gc
 import math
@@ -15,10 +11,10 @@ import deepspeed
 from utils.message_manager import cList, Conversation
 import requests
 import json
-from RWKV.v6.rwkv_state.model import RWKV
-from RWKV.v6.rwkv_state.block import BlockStateList
+from config import RWKV
+from config import BlockStateList
 import torch.nn.functional as F
-from RWKV.v6.rwkv_state.functions import (
+from RWKV.functions import (
     train_forward,
     train_forward_from_embds,
     speak,
@@ -26,7 +22,7 @@ from RWKV.v6.rwkv_state.functions import (
     speak_next_token,
     calc_cross_entropy_loss,
 )
-from RWKV.v6.rwkv_state.multimodal_functions import (
+from RWKV.multimodal_functions import (
     voice_encode_and_adapt,
 )
 import deepspeed
@@ -43,10 +39,8 @@ from utils.dataset.dataset_functions import (
     MyDataloader,
     EpochSampleDataloader,
 )
-from RWKV.v6.rwkv_state.vocoder import (
-    VocoderDiscriminator,
-    Losses as VoiceLosses,
-)
+
+from config import vocoder
 
 from typing import List
 from functools import partial
@@ -78,8 +72,8 @@ class OnlineTrainingAPP:
             self.feat_extractor = torch.load(
                 train_config.vocoder.load_feature_extractor_dir
             )
-            self.voice_losses = VoiceLosses(train_config)
-            self.discriminator = VocoderDiscriminator(train_config.vocoder)
+            self.voice_losses = vocoder.Losses(train_config)
+            self.discriminator = vocoder.VocoderDiscriminator(train_config.vocoder)
             self.discriminator_engine, _ = self.discriminator.build_engine()
             self.voice_unit_len = (
                 self.args.vocoder.head.hop_length * self.args.vocoder.adapter.chunk_len

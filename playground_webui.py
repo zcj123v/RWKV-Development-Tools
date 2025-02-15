@@ -1,13 +1,10 @@
-from config import global_config
+
 import os
+from config import global_config
 import uuid
 
 save_preference_dir = "./configs/user_preference.json"
-global_config.now = "infer_service"
 infer_config = global_config.infer_service_config
-
-os.environ["RWKV_HEAD_SIZE_A"] = str(infer_config.model.head_size)
-os.environ["RWKV_CTXLEN"] = str(infer_config.model.ctx_len)
 
 import gradio as gr
 from utils.webui.webui_infer import InferAgent, update_plot
@@ -33,7 +30,7 @@ from utils.webui.webui_benchmark import (
     stop_benchmark,
     run_mmlu,
     run_humaneval,
-    save_question_list
+    save_question_list,
 )
 import json
 from functools import partial
@@ -655,7 +652,7 @@ with gr.Blocks() as demo:
                 benchmark_output = gr.Textbox(
                     label="基准测试结果", lines=15, interactive=True
                 )
-                
+
                 bmk_save_question_btn.click(
                     partial(save_question_list, question_list, bmk_question_DIR),
                     outputs=[benchmark_output],

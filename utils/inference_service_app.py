@@ -1,19 +1,14 @@
 from config import global_config
 import os
 
-
-global_config.now = "infer_service"
 infer_config = global_config.infer_service_config
-
-os.environ["RWKV_HEAD_SIZE_A"] = str(infer_config.model.head_size)
-os.environ["RWKV_CTXLEN"] = str(infer_config.model.ctx_len)
 
 from utils.message_manager import Conversation, cList
 from utils.collections import parse_format_constrain_str
-from RWKV.v6.infer_model.model_service import RWKV
+from config import RWKVInfer as RWKV
 from typing import List
-from RWKV.v6.infer_model.functions import sample_logits, ppl
-from RWKV.v6.infer_model.block import BlockStateList, BlockState
+from RWKV.functions import sample_logits, ppl
+from config import BlockStateList
 import torch
 import sys, gc
 import uuid

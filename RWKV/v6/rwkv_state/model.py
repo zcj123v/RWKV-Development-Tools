@@ -10,7 +10,8 @@ from torch.cuda.amp import autocast
 
 if importlib.util.find_spec("deepspeed"):
     import deepspeed
-from .block import Block, BlockStateList
+from .block import Block
+from RWKV.v6.state import BlockStateList
 from .lora import LoraLinear
 from .vocoder import AdapterE, VoiceDecoder, TrackMixing
 from functools import partial

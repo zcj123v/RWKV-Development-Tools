@@ -1,13 +1,9 @@
-from config import global_config
 import os,json
+os.environ["WORKING_MODE"] = "infer_service"
 
+from config import global_config
 
-global_config.now = "infer_service"
 infer_config = global_config.infer_service_config
-
-os.environ["RWKV_HEAD_SIZE_A"] = str(infer_config.model.head_size)
-os.environ["RWKV_CTXLEN"] = str(infer_config.model.ctx_len)
-
 
 from bottle import route, run, request, response,Bottle
 import threading
