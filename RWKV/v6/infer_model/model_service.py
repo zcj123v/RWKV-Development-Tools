@@ -6,7 +6,8 @@ import torch
 import torch.nn as nn
 import types
 
-from .block import Block, BlockStateList
+from .block import Block
+from RWKV.v6.state import BlockStateList
 from torch.cuda.amp import autocast
 
 

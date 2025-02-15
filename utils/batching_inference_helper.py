@@ -2,8 +2,8 @@ from config import global_config
 
 infer_config = global_config.infer_service_config
 
-from RWKV.v6.rwkv_state.functions import sample_logits, ppl
-from RWKV.v6.rwkv_state.block import BlockStateList
+from RWKV.functions import sample_logits, ppl
+from config import BlockStateList
 import torch
 from utils.collections import parse_format_constrain_str
 from collections import OrderedDict

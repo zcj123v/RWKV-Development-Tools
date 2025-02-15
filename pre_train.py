@@ -1,13 +1,7 @@
-from config import global_config
 import os
-
-
-global_config.now = "pretrain"
+os.environ["WORKING_MODE"] = "pretrain"
+from config import global_config
 pretrain_config = global_config.pretrain_script_config
-
-os.environ["RWKV_HEAD_SIZE_A"] = str(pretrain_config.model.head_size)
-os.environ["RWKV_CTXLEN"] = str(pretrain_config.model.ctx_len)
-
 
 import os, sys
 import gc
@@ -16,10 +10,10 @@ import copy
 import torch
 import deepspeed
 import json
-from RWKV.v6.rwkv_state.model import RWKV
-from RWKV.v6.rwkv_state.block import BlockStateList
+from config import RWKV
+from config import BlockStateList
 import torch.nn.functional as F
-from RWKV.v6.rwkv_state.functions import (
+from RWKV.functions import (
     train_forward,
     train_forward_from_embds,
     speak,
@@ -28,7 +22,7 @@ from RWKV.v6.rwkv_state.functions import (
     calc_cross_entropy_loss,
     calc_voice_loss,
 )
-from RWKV.v6.rwkv_state.multimodal_functions import (
+from RWKV.multimodal_functions import (
     voice_encode_and_adapt,
 )
 from utils.dataset.dataset import MultimodalDataset
@@ -40,10 +34,7 @@ import wandb
 from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 from deepspeed import comm as dist
 
-from RWKV.v6.rwkv_state.vocoder import (
-    VocoderDiscriminator,
-    Losses as VoiceLosses,
-)
+from config import vocoder
 
 deepspeed.init_distributed()
 import torchaudio
@@ -54,7 +45,7 @@ import time
 class PretrainingAPP:
     def __init__(self):
         self.args = pretrain_config
-        self.model = RWKV(self.args,global_config.voice_on)
+        self.model = RWKV(self.args, global_config.voice_on)
         self.model_engine = self.build_engine()
         self.train_state = None  # 训练时的滚动state
         self.rank = dist.get_rank()
@@ -78,11 +69,15 @@ class PretrainingAPP:
             wandb.init(project=global_config.wandb_proj)
 
         if global_config.voice_on:
-            self.feat_extractor = torch.load(pretrain_config.vocoder.load_feature_extractor_dir)
+            self.feat_extractor = torch.load(
+                pretrain_config.vocoder.load_feature_extractor_dir
+            )
             self.feat_extractor.to(f"cuda:{self.rank}")
-            self.discriminator = VocoderDiscriminator(pretrain_config.vocoder)
+            self.discriminator = vocoder.VocoderDiscriminator(pretrain_config.vocoder)
             self.discriminator_engine, _ = self.discriminator.build_engine()
-            self.voice_losses = VoiceLosses(pretrain_config).to(self.discriminator_engine.device)
+            self.voice_losses = vocoder.Losses(pretrain_config).to(
+                self.discriminator_engine.device
+            )
             self.voice_unit_len = (
                 self.args.vocoder.head.hop_length * self.args.vocoder.adapter.chunk_len
             )
@@ -90,13 +85,13 @@ class PretrainingAPP:
     def train(
         self,
     ):
-        
+
         for e in range(pretrain_config.epoches):
             loop = tqdm.tqdm(enumerate(self.data_loader, 0))
-            for step, (batch_units,batch_masks) in loop:
+            for step, (batch_units, batch_masks) in loop:
                 # print(step, len(batch_units), len(batch_units[0]))
                 # print(
-                    # f"===============step:{step},rank: {self.rank}:{time.time()}==============="
+                # f"===============step:{step},rank: {self.rank}:{time.time()}==============="
                 # )
                 unit_dicts = self.unit_stream_pressor.encode(
                     self.model_engine,
@@ -137,9 +132,9 @@ class PretrainingAPP:
                         # print(end_idx - start_idx, "---", voice_latent.shape)
                         out_voice = self.model_engine.vocoder_d(voice_latent)
                         print(origin_voice.shape, "===", out_voice.shape)
-                        B,ch,N=origin_voice.shape
-                        origin_voice_splited=origin_voice.view(B*ch,N)
-                        out_voice_splited=out_voice.view(B*ch,N)
+                        B, ch, N = origin_voice.shape
+                        origin_voice_splited = origin_voice.view(B * ch, N)
+                        out_voice_splited = out_voice.view(B * ch, N)
                         # 要不要随机切N段，然后做这N段的loss？ --显存3b一次能承受40个units 预计
                         disc_loss, gen_loss = calc_voice_loss(
                             self.discriminator,
@@ -147,7 +142,11 @@ class PretrainingAPP:
                             origin_voice_splited,
                             out_voice_splited,
                             pretrain_config,
-                            wandb if global_config.wandb_proj and self.rank==0 else None,
+                            (
+                                wandb
+                                if global_config.wandb_proj and self.rank == 0
+                                else None
+                            ),
                         )
                         voice_loss_disc += disc_loss
                         voice_loss_gen += gen_loss
@@ -163,30 +162,34 @@ class PretrainingAPP:
                 self.model_engine.zero_grad()
                 self.model_engine.backward(m)
                 self.model_engine.step()
-                
+
                 if global_config.voice_on:
-                    loop.set_postfix(text_loss=text_loss.item(),voice_loss_gen=voice_loss_gen)
+                    loop.set_postfix(
+                        text_loss=text_loss.item(), voice_loss_gen=voice_loss_gen
+                    )
                 else:
                     loop.set_postfix(text_loss=text_loss.item())
-                if global_config.wandb_proj and self.rank==0:
+                if global_config.wandb_proj and self.rank == 0:
                     wandb.log({"text_loss": text_loss.item(), "total_loss": m.item()})
                 dist.barrier()
-                
 
-                if step % pretrain_config.save_weight_steps == 0 and self.rank==0:
-                    save_path = self.save_weight(f"pretrain_step_{step}", save_train_state=False)
+                if step % pretrain_config.save_weight_steps == 0 and self.rank == 0:
+                    save_path = self.save_weight(
+                        f"pretrain_step_{step}", save_train_state=False
+                    )
                     if global_config.voice_on:
-                        save_disc_path=self.save_disc(f"pretrain_step_{step}")
+                        save_disc_path = self.save_disc(f"pretrain_step_{step}")
                         print(f"====save disc at step: {step}, to={save_path}====")
                     print(f"====save ckpt at step: {step}, to={save_path}====")
-                    
-            if e % pretrain_config.save_weight_epochs == 0 and self.rank==0:
-                save_path = self.save_weight(f"pretrain_epoch_{e}", save_train_state=False)
+
+            if e % pretrain_config.save_weight_epochs == 0 and self.rank == 0:
+                save_path = self.save_weight(
+                    f"pretrain_epoch_{e}", save_train_state=False
+                )
                 if global_config.voice_on:
-                    save_disc_path=self.save_disc(f"pretrain_epoch_{e}")
+                    save_disc_path = self.save_disc(f"pretrain_epoch_{e}")
                     print(f"====save disc at step: {step}, to={save_disc_path}====")
                 print(f"====save ckpt at step: {step}, to={save_path}====")
-
 
     # def voice_encode_and_adapt(self, x):
     #     l, r = torch.split(x, 1, dim=1)
@@ -227,7 +230,7 @@ class PretrainingAPP:
     #     x = self.model_engine.adapter_e(x)
     #     return x
 
-    def load_model(self, ckpt_dir:str):
+    def load_model(self, ckpt_dir: str):
         model_weights = torch.load(ckpt_dir, map_location="cpu")
         self.load_state_dict(model_weights, strict=False)
         self.model_engine = self.build_engine()
@@ -240,7 +243,9 @@ class PretrainingAPP:
         if global_config.wandb_proj and self.rank == 0:
             wandb.init(project=global_config.wandb_proj)
 
-    def save_weight(self, name:str, save_train_state:bool=False, folder:str=None):
+    def save_weight(
+        self, name: str, save_train_state: bool = False, folder: str = None
+    ):
         folder = folder if folder else global_config.ckpt_dir
         fpath = f"{folder}/{name}.pth"
         state_path = f"{folder}/{name}.state"
@@ -251,17 +256,18 @@ class PretrainingAPP:
         gc.collect()
         torch.cuda.empty_cache()
         return fpath
-    
-    def save_disc(self,name:str, folder:str=None):
+
+    def save_disc(self, name: str, folder: str = None):
         folder = folder if folder else global_config.ckpt_dir
         fpath = f"{folder}/{name}_disc.pth"
-        self.discriminator.load_state_dict(self.discriminator_engine.module.state_dict())
+        self.discriminator.load_state_dict(
+            self.discriminator_engine.module.state_dict()
+        )
         torch.save(self.discriminator.state_dict(), fpath)
         gc.collect()
         torch.cuda.empty_cache()
         return fpath
-        
-        
+
     def build_engine(self):
         ds_config = {
             "bfloat16": {"enabled": True},
@@ -285,7 +291,10 @@ class PretrainingAPP:
                     "device": "cpu",
                     "pin_memory": True,
                 }
-            if pretrain_config.deepspeed.offload_param_stage3 and pretrain_config.deepspeed.ds_stage == 3:
+            if (
+                pretrain_config.deepspeed.offload_param_stage3
+                and pretrain_config.deepspeed.ds_stage == 3
+            ):
                 ds_config["zero_optimization"]["offload_param"] = {
                     "device": "cpu",
                     "pin_memory": True,
@@ -302,7 +311,8 @@ class PretrainingAPP:
                 amsgrad=False,
                 bias_correction=True,
             )
-            if pretrain_config.deepspeed.zero and pretrain_config.deepspeed.offload_optimizer
+            if pretrain_config.deepspeed.zero
+            and pretrain_config.deepspeed.offload_optimizer
             else FusedAdam(
                 self.model.get_optim_groups(),
                 lr=self.args.train.lr_init,
@@ -347,12 +357,14 @@ class PretrainingAPP:
                 y, orig_freq=sr, new_freq=pretrain_config.vocoder.sample_rate
             )
         last_length = y.size(-1) % (
-            pretrain_config.vocoder.head.hop_length * pretrain_config.vocoder.adapter.chunk_len
+            pretrain_config.vocoder.head.hop_length
+            * pretrain_config.vocoder.adapter.chunk_len
         )
         if last_length != 0:
             padding_tensor = torch.zeros(
                 1,
-                pretrain_config.vocoder.head.hop_length * pretrain_config.vocoder.adapter.chunk_len
+                pretrain_config.vocoder.head.hop_length
+                * pretrain_config.vocoder.adapter.chunk_len
                 - last_length,
             )
             y = torch.cat((y, padding_tensor), dim=-1)
@@ -361,7 +373,7 @@ class PretrainingAPP:
     @torch.no_grad()
     def read_bin_wav(
         self,
-        fp:str,
+        fp: str,
     ):
         wav = self.read_wav(fp)
         ch, N = wav.size()

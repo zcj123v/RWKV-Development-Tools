@@ -1,12 +1,12 @@
+import os
+os.environ["WORKING_MODE"] = "train_service"
+
 from gevent import monkey
 monkey.patch_all()
 from config import global_config
-import os
-global_config.now = "train_service"
+
 train_config = global_config.train_service_config
 
-os.environ["RWKV_HEAD_SIZE_A"] = str(train_config.model.head_size)
-os.environ["RWKV_CTXLEN"] = str(train_config.model.ctx_len)
 
 from bottle import route, run, request, response
 from utils.message_manager import cList, Conversation

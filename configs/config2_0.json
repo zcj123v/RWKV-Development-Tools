@@ -5,6 +5,7 @@
     "tokenizer_eval_dir": "./vocabs/rwkv_vocab_ourborous_eval.txt",
     "voice_on": false,
     "wandb_proj": "",
+    "rwkv_version": "v6",
     "server_config": {
         "train": {
             "host": "0.0.0.0",
@@ -29,7 +30,6 @@
     "train_service_config": {
         "model": {
             "load_model": "/home/li/MachineLr/datadisk/rwkv-checkpoints/basemodel/RWKV-x060-World-3B-v2.1-20240417-ctx4096.pth",
-            "rwkv_version": "v6",
             "n_embd": -1,
             "n_layer": -1,
             "vocab_size": -1,
@@ -123,7 +123,6 @@
     "infer_service_config": {
         "model": {
             "load_model": "/home/li/MachineLr/datadisk/rwkv-checkpoints/ruri0207/ruri0207+.pth",
-            "rwkv_version": "v6",
             "n_embd": -1,
             "n_layer": -1,
             "vocab_size": -1,
@@ -193,7 +192,6 @@
         "dataset_folder": "/home/li/MachineLr/datadisk/ssg-dataset-protocol-datas/ruri_add_pretrain",
         "model": {
             "load_model": "/home/li/MachineLr/datadisk/rwkv-checkpoints/ruri0207/ruri3b0207.pth",
-            "rwkv_version": "v6",
             "n_embd": -1,
             "n_layer": -1,
             "vocab_size": 65536,
