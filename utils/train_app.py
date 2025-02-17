@@ -449,7 +449,7 @@ class OnlineTrainingAPP:
                     ensure_ascii=False,
                 ) + "\n"
                 print(
-                    f"gpu{self.rank}: mean-text-loss->{mean_text_loss} | now-text-loss->{text_loss.item()}"
+                    f"gpu{self.rank}: mean-text-loss->{mean_text_loss} | now-text-loss->{text_loss_item}"
                 )
 
                 dist.barrier()
@@ -596,7 +596,7 @@ class OnlineTrainingAPP:
                     ensure_ascii=False,
                 ) + "\n"
                 print(
-                    f"gpu{self.rank}: mean-text-loss->{mean_text_loss} | now-text-loss->{text_loss.item()}"
+                    f"gpu{self.rank}: mean-text-loss->{mean_text_loss} | now-text-loss->{text_loss_item}"
                 )
 
                 dist.barrier()
