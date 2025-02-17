@@ -122,7 +122,7 @@
     },
     "infer_service_config": {
         "model": {
-            "load_model": "/home/li/MachineLr/datadisk/rwkv-checkpoints/ruri0207/ruri0207+.pth",
+            "load_model": "/home/li/MachineLr/datadisk/rwkv-checkpoints/ruri0217/ruri7b217.pth",
             "n_embd": -1,
             "n_layer": -1,
             "vocab_size": -1,
