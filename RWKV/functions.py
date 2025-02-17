@@ -232,6 +232,138 @@ def speak(
         return speak_sequence, new_states
 
 
+@torch.no_grad()
+def speak_next_token_batch(
+    rwkv,
+    last_tokens_batch: torch.Tensor,
+    states: BlockStateList,
+    batch_occurrence: List[dict],
+    temperature,
+    top_p,
+    alpha_presence,
+    alpha_frequency,
+    alpha_decay,
+    token_ban=[],
+):
+    assert len(batch_occurrence) == last_tokens_batch.shape[0]
+    logits, states = rwkv.batching(
+        last_tokens_batch,
+        states,
+    )
+
+    for b, occurence in enumerate(batch_occurrence):
+        for xxx in occurence:
+            occurence[xxx] *= alpha_decay
+        for n in occurence:
+            logits[b, -1, n] -= alpha_presence + occurence[n] * alpha_frequency
+    for n in token_ban:
+        logits[:, -1, n] = -1e38
+
+    last_logits = logits[:, -1:, :]
+    next_tokens_batch = sample_logits_batch(last_logits, temperature, top_p)
+    return next_tokens_batch, states
+
+
+@torch.no_grad()
+def batch_generate(
+    rwkv,
+    start_with_batch_tokens: torch.Tensor,
+    states: BlockStateList,
+    temperature: float,
+    top_p: float,
+    alpha_presence: float,
+    alpha_frequency: float,
+    alpha_decay: float,
+    token_stop=[65535],
+    max_tokens=500,
+    m_postfix_token=[],
+):
+    rwkv.eval()
+    next_tokens_batch = start_with_batch_tokens
+    args = rwkv.args
+    B, T = start_with_batch_tokens.size()
+    if states is None:
+        new_states = BlockStateList.create(
+            args.n_layer,
+            B,
+            args.n_embd,
+            args.n_head,
+            args.head_size,
+            next(rwkv.parameters()).device,
+            next(rwkv.parameters()).dtype,
+        )
+    else:
+        new_states = states
+
+    speak_sequences = [[] for _ in range(B)]
+    batch_occurrence = [{} for _ in range(B)]
+    end_sample_batch = []
+    out_states = BlockStateList.empty(
+        args.n_layer,
+        B,
+        args.n_embd,
+        args.n_head,
+        args.head_size,
+        next(rwkv.parameters()).device,
+        next(rwkv.parameters()).dtype,
+    )
+    for i in range(max_tokens):
+        next_tokens_batch, new_states = speak_next_token_batch(
+            rwkv,
+            last_tokens_batch=next_tokens_batch,
+            states=new_states,
+            batch_occurrence=batch_occurrence,
+            temperature=temperature,
+            top_p=top_p,
+            alpha_presence=alpha_presence,
+            alpha_frequency=alpha_frequency,
+            alpha_decay=alpha_decay,
+        )
+        next_tokens_batch = next_tokens_batch.unsqueeze(-1)
+        for b, next_token in enumerate(next_tokens_batch):
+            next_token = int(next_token)
+            if 49 <= next_token <= 58:
+                pass
+            elif next_token not in batch_occurrence[b]:
+                batch_occurrence[b][next_token] = 1
+            else:
+                batch_occurrence[b][next_token] += 1
+            if b not in end_sample_batch:
+                speak_sequences[b].append(next_token)
+
+                if next_token in token_stop:
+                    if m_postfix_token:
+                        postfix = torch.tensor(
+                            [[m_postfix_token]], dtype=torch.long
+                        ).to(next(rwkv.parameters()).device)
+                        target_state = states.batchof(b)
+                        _, new_target_state = rwkv.batching(postfix, target_state)
+                        print(target_state.shift_states.size())
+                        print(new_target_state.shift_states.size())
+                        out_states.shift_states[:, :, b, :] = copy.deepcopy(
+                            new_target_state.shift_states[:, :, 0, :]
+                        )
+                        out_states.wkv_states[:, b, :, :, :] = copy.deepcopy(
+                            new_target_state.wkv_states[:, 0, :, :, :]
+                        )
+                        end_sample_batch.append(b)
+                    speak_sequences[b].pop()
+
+        if len(end_sample_batch) == B:
+            break
+
+    for b in range(B):
+        if b not in end_sample_batch:
+            out_states.shift_states[:, :, b, :] = copy.deepcopy(
+                new_states.batchof(b).shift_states[:, :, 0, :]
+            )
+            out_states.wkv_states[:, b, :, :, :] = copy.deepcopy(
+                new_states.batchof(b).wkv_states[:, 0, :, :, :]
+            )
+
+    return speak_sequences, out_states
+
+
 def train_forward(rwkv, batch_idx, batch_masks, states=None):
     # batch_idx [B,N] torch.LongTensor
     # batch_masks [B, N] torch.tensor

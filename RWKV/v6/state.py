@@ -62,6 +62,16 @@ class BlockStateList:
         self.shift_states = self.shift_states
         return self
 
+    def batchof(self, batch_idx):
+        if not (0 <= batch_idx < self.wkv_states.size(1)):
+            raise ValueError(
+                f"dim_index 超出范围，应在 [0, batch_size: {self.wkv_states.size(1) - 1}] 之间。"
+            )
+        return BlockStateList(
+            self.shift_states[:, :, batch_idx : batch_idx + 1, :],
+            self.wkv_states[:, batch_idx : batch_idx + 1, :, :, :],
+        )
+
     def __getitem__(self, layer: int):
 
         if isinstance(layer, int):  # 保持原有的整数索引功能

@@ -114,7 +114,6 @@ class TrainAgent:
                     mean_loss = result["mean_text_loss"]
                     text_loss = result["text_loss"]
                     text_loss_list.append(text_loss)
-                    text_loss_list = text_loss_list[-100:]
                     n_data = result["n_data"]
                     left_data = result["left_data"]
                     progress_percent = (n_data - left_data) / n_data * 100

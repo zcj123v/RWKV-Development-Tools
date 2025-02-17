@@ -16,10 +16,6 @@ from config import BlockStateList
 import torch.nn.functional as F
 from RWKV.functions import (
     train_forward,
-    train_forward_from_embds,
-    speak,
-    ppl,
-    speak_next_token,
     calc_cross_entropy_loss,
 )
 from RWKV.multimodal_functions import (

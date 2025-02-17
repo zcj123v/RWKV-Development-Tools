@@ -44,4 +44,4 @@ class ChannelMix(torch.jit.ScriptModule):
 
         logits = torch.sigmoid(self.receptance(xr)) * kv
 
-        return (logits, x[:, -1])
+        return (logits, x[:, 0])

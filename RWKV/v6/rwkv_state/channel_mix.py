@@ -41,4 +41,4 @@ class ChannelMix(nn.Module):
         k = torch.relu(k) ** 2 # 这里会不会是overflow的元凶
         kv = self.value(k)
 
-        return torch.sigmoid(self.receptance(xr)) * kv, x[:, -1]
+        return torch.sigmoid(self.receptance(xr)) * kv, x[:, 0]
