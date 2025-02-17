@@ -417,6 +417,14 @@ class OnlineTrainingAPP:
                 text_loss = calc_cross_entropy_loss(
                     out_logits, token_targets, mask_targets
                 )
+                text_loss_item = text_loss.item()
+                if text_loss < min_loss:
+                    text_loss = text_loss * min_loss_fix
+                    print(f"(<min)fixed_loss:{text_loss}")
+                elif text_loss > max_loss:
+                    print(f"(>max)before_fixed_loss:{text_loss}")
+                    text_loss = text_loss * max_loss_fix
+                    print(f"(>max)fixed_loss:{text_loss}")
                 # TODO: 音频loss
                 #
                 # ===============
@@ -424,7 +432,7 @@ class OnlineTrainingAPP:
                 self.model_engine.zero_grad()
                 self.model_engine.backward(m)
                 self.model_engine.step()
-                total_text_loss.append(text_loss.item())
+                total_text_loss.append(text_loss_item)
                 total_text_loss = total_text_loss[-100:]
                 mean_text_loss = sum(total_text_loss) / len(total_text_loss)
 
@@ -433,7 +441,7 @@ class OnlineTrainingAPP:
                         "epoch": e,
                         "step": step,
                         "mean_text_loss": mean_text_loss,
-                        "text_loss": text_loss.item(),
+                        "text_loss": text_loss_item,
                         "n_tokens": dataloader.n_dataset_ctx,
                         "left_tokens": dataloader.n_dataset_ctx
                         - dataloader.current_ctx,
@@ -557,6 +565,14 @@ class OnlineTrainingAPP:
                 text_loss = calc_cross_entropy_loss(
                     out_logits, token_targets, mask_targets
                 )
+                text_loss_item = text_loss.item()
+                if text_loss < min_loss:
+                    text_loss = text_loss * min_loss_fix
+                    print(f"(<min)fixed_loss:{text_loss}")
+                elif text_loss > max_loss:
+                    print(f"(>max)before_fixed_loss:{text_loss}")
+                    text_loss = text_loss * max_loss_fix
+                    print(f"(>max)fixed_loss:{text_loss}")
                 # TODO: 音频loss
                 #
                 # ===============
@@ -564,7 +580,7 @@ class OnlineTrainingAPP:
                 self.model_engine.zero_grad()
                 self.model_engine.backward(m)
                 self.model_engine.step()
-                total_text_loss.append(text_loss.item())
+                total_text_loss.append(text_loss_item)
                 total_text_loss = total_text_loss[-100:]
                 mean_text_loss = sum(total_text_loss) / len(total_text_loss)
 
@@ -573,7 +589,7 @@ class OnlineTrainingAPP:
                         "epoch": e,
                         "step": step,
                         "mean_text_loss": mean_text_loss,
-                        "text_loss": text_loss.item(),
+                        "text_loss": text_loss_item,
                         "n_data": n_data,
                         "left_data": n_data - step - 1,
                     },
