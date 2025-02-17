@@ -5,6 +5,7 @@ import copy
 import sys
 import requests
 from config import BlockStateList
+from typing import List
 
 torch.autograd.set_detect_anomaly(True)
 
@@ -277,6 +278,7 @@ def batch_generate(
     token_stop=[65535],
     max_tokens=500,
     m_postfix_token=[],
+    token_ban=[]
 ):
     rwkv.eval()
     next_tokens_batch = start_with_batch_tokens
@@ -318,6 +320,7 @@ def batch_generate(
             alpha_presence=alpha_presence,
             alpha_frequency=alpha_frequency,
             alpha_decay=alpha_decay,
+            token_ban=token_ban,
         )
         next_tokens_batch = next_tokens_batch.unsqueeze(-1)
         for b, next_token in enumerate(next_tokens_batch):
