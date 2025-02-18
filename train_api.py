@@ -14,7 +14,6 @@ import torch.distributed as dist
 import requests
 import asyncio
 import aiohttp
-from concurrent.futures import ThreadPoolExecutor
 from utils.train_app import OnlineTrainingAPP
 import json
 
@@ -173,48 +172,6 @@ def train_text_from_messages():
     )
     app.save_weight(save_name_last, True)
 
-
-@route("/train_dpo_from_folders", method="POST")
-def train_dpo_from_folders():
-    req = dict(request.json)
-    folder_weight_dir_list = req.get("folder_weight_dir_list", [])
-    step_save_ckpt = req.get("step_save_ckpt", None)
-    inference_service_server = req.get(
-        "inference_service_server", "http://localhost:4514"
-    )
-    allow_multilabel = req.get("allow_multilabel", True)
-    n_use_max_choices = req.get("n_use_max_choices", 5)
-    stream = req.get("stream", False)
-    if not stream:
-        app.train_dpo_v2(
-            folder_weight_dir_list=folder_weight_dir_list,
-            inference_service_server=inference_service_server,
-            step_save_ckpt=step_save_ckpt,
-            allow_multilabel=allow_multilabel,
-            n_use_max_choices=n_use_max_choices,
-        )
-
-    else:
-        return app.train_dpo_v2_iterator(
-            folder_weight_dir_list=folder_weight_dir_list,
-            inference_service_server=inference_service_server,
-            step_save_ckpt=step_save_ckpt,
-            allow_multilabel=allow_multilabel,
-            n_use_max_choices=n_use_max_choices,
-        )
-
-
-@route("/train_multimodal_from_folders", method="POST")
-def train_multimodal_from_folders():
-    req = dict(request.json)
-    folder_weight_dir_list = req.get("folder_weight_dir_list", [])
-    epoch = req.get("epoch", 1)
-    train_ctx = req.get("train_ctx", 256)
-    multi_scale_ctx = req.get("multi_scale_ctx", None)
-    multi_scale_alpha = req.get("multi_scale_alpha", None)
-    app.train_multimodal(
-        folder_weight_dir_list, epoch, train_ctx, multi_scale_ctx, multi_scale_alpha
-    )
 
 
 async def distribute_package(received_package, route):
