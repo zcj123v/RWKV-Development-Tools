@@ -1054,6 +1054,16 @@ with gr.Blocks() as demo:
                                 scale=6,
                             )
                         with gr.Row():
+                            ollr_lr_init_input = gr.Number(
+                                label="初始学习率", value=6e-5, interactive=True
+                            )
+                            ollr_lr_final_input = gr.Number(
+                                label="最终学习率", value=6e-5, interactive=True
+                            )
+                            ollr_lr_warmup_input = gr.Number(
+                                label="学习率预热步数", value=100, interactive=True
+                            )
+                        with gr.Row():
                             ollr_use_qa_mask_checkbox = gr.Checkbox(
                                 label="使用qa mask", value=False
                             )
@@ -1083,7 +1093,7 @@ with gr.Blocks() as demo:
             # 多文件夹数据采样模式部分
             with gr.Column(visible=False) as folder_learning_section:
                 with gr.Row():
-                    with gr.Column():
+                    with gr.Column(scale=3):
                         fllr_dataset_list_input = gr.Textbox(
                             label="数据集列表",
                             placeholder="""[
@@ -1115,6 +1125,16 @@ with gr.Blocks() as demo:
                         )
                         fllr_n_save_ckpt_step_input = gr.Number(
                             label="保存检查点频率 (step)", value=1, visible=False
+                        )
+                    with gr.Column():
+                        fllr_lr_init_input = gr.Number(
+                            label="初始学习率", value=6e-5, interactive=True
+                        )
+                        fllr_lr_final_input = gr.Number(
+                            label="最终学习率", value=6e-5, interactive=True
+                        )
+                        fllr_lr_warmup_input = gr.Number(
+                            label="学习率预热步数", value=100, interactive=True
                         )
 
             # 强化学习部分
@@ -1192,6 +1212,9 @@ with gr.Blocks() as demo:
                     ollr_multi_scale_alpha_input,
                     ollr_keep_states_mode_dropdown,
                     ollr_use_qa_mask_checkbox,
+                    ollr_lr_init_input,
+                    ollr_lr_final_input,
+                    ollr_lr_warmup_input,
                 ],
                 [progress_slider, train_output_info, text_loss_curve_plot],
             )
@@ -1206,6 +1229,9 @@ with gr.Blocks() as demo:
                     fllr_use_n_save_ckpt_step_checkbox,
                     fllr_n_save_ckpt_step_input,
                     fllr_use_qa_mask_checkbox,
+                    fllr_lr_init_input,
+                    fllr_lr_final_input,
+                    fllr_lr_warmup_input,
                 ],
                 [progress_slider, train_output_info, text_loss_curve_plot],
             )
