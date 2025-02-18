@@ -16,6 +16,10 @@ from config import BlockStateList
 import torch.nn.functional as F
 from RWKV.functions import (
     train_forward,
+    train_forward_from_embds,
+    speak,
+    ppl,
+    speak_next_token,
     calc_cross_entropy_loss,
 )
 from RWKV.multimodal_functions import (
@@ -25,9 +29,10 @@ import deepspeed
 from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 import random
 import wandb
+import sys
+import psutil
 
-
-from utils.collections import pad_2d_list_with_zeros,pad_and_batch
+from utils.collections import pad_2d_list_with_zeros, pad_and_batch
 from utils.dataset.dataset import MultimodalDataset, read_bin_wav
 from utils.dataset.dataset_functions import (
     UnitStreamProcessor,
@@ -40,18 +45,46 @@ from config import vocoder
 
 from typing import List
 from functools import partial
+import argparse
 
 from deepspeed import comm as dist
 
 deepspeed.init_distributed()
 
 
+def get_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--reload_model_dir", type=str, help="重新加载训练模型位置")
+    parser.add_argument("--lr_init", type=float, help="初始学习率")
+    parser.add_argument("--lr_final", type=float, help="最终学习率")
+    parser.add_argument("--warmup_steps", type=int, help="warmup步数")
+    args = parser.parse_known_args()[0]
+    return args
+
+
 class OnlineTrainingAPP:
     def __init__(self):
         self.args = train_config
+        cmd_args = get_args()
+        if cmd_args.reload_model_dir:
+            print(f"overwrite model dir: {cmd_args.reload_model_dir}")
+            train_config.model.load_model = cmd_args.reload_model_dir
+        if cmd_args.lr_init:
+            print(f"overwrite lr_init: {cmd_args.lr_init}")
+            self.args.train.lr_init = float(cmd_args.lr_init)
+        if cmd_args.lr_final:
+            print(f"overwrite lr_final: {cmd_args.lr_final}")
+            self.args.train.lr_final = float(cmd_args.lr_final)
+        if cmd_args.warmup_steps:
+            print(f"overwrite warmup_steps: {cmd_args.warmup_steps}")
+            self.args.train.warmup_steps = int(cmd_args.warmup_steps)
         print(f"load model from: {train_config.model.load_model}")
         self.model = RWKV(self.args, global_config.voice_on)
-        self.model_engine = self.build_engine()
+        self.model_engine = self.build_engine(
+            lr_init=self.args.train.lr_init,
+            lr_final=self.args.train.lr_final,
+            warmup_steps=self.args.train.warmup_steps,
+        )
         self.infer_tokenizer = global_config.tokenizer_eval
         self.train_tokenizer = global_config.tokenizer_train
 
@@ -75,15 +108,46 @@ class OnlineTrainingAPP:
                 self.args.vocoder.head.hop_length * self.args.vocoder.adapter.chunk_len
             )
 
-    def load_model(self, ckpt_dir: str):
-        model_weights = torch.load(ckpt_dir, map_location="cpu")
-        self.model.load_state_dict(model_weights, strict=False)
+    def load_model(
+        self,
+        ckpt_dir: str,
+        lr_init: float = None,
+        lr_final: float = None,
+        warmup_steps: int = None,
+    ):
+        print(f"从{ckpt_dir}重新读取模型...")
+        if hasattr(self, "model_engine"):
+            current_process = psutil.Process()
+            parent_process = current_process.parent().parent()
 
-        del self.model_engine
-        gc.collect()
-        torch.cuda.empty_cache()
-
-        self.model_engine = self.build_engine()
+            cmd_line = parent_process.cmdline()
+            ds_idx, ds = next(
+                (
+                    (idx, item)
+                    for idx, item in enumerate(cmd_line)
+                    if item.endswith("/deepspeed")
+                ),
+                None,
+            )
+            cmd = ["deepspeed"] + parent_process.cmdline()[ds_idx + 1 :]
+            cmd += [
+                "--reload_model_dir",
+                ckpt_dir,
+                "--lr_init",
+                str(lr_init) if lr_init else str(self.args.train.lr_init),
+                "--lr_final",
+                str(lr_final) if lr_final else str(self.args.train.lr_final),
+                "--warmup_steps",
+                (
+                    str(warmup_steps)
+                    if warmup_steps
+                    else str(self.args.train.warmup_steps)
+                ),
+            ]
+            print("====================================================")
+            print("run", " ".join(cmd))
+            print("====================================================")
+            os.execv(ds, cmd)
 
     def save_weight(
         self, name: str, save_train_state: bool = False, folder: str = None
@@ -216,16 +280,16 @@ class OnlineTrainingAPP:
         self,
         tokens: list,
         masks: list,
-        min_loss: float=None,
-        max_loss: float=None,
-        min_loss_fix: float=None,
-        max_loss_fix: float=None,
+        min_loss: float = None,
+        max_loss: float = None,
+        min_loss_fix: float = None,
+        max_loss_fix: float = None,
         states: BlockStateList = None,
         multi_scale_ctx: int = None,
         multi_scale_alpha: float = 1,
-        keep_train_states:bool=False,
-        ignore_ctx:bool=False,
-        return_left_token:bool=False,
+        keep_train_states: bool = False,
+        ignore_ctx: bool = False,
+        return_left_token: bool = False,
     ):
         """
         文本训练
@@ -488,16 +552,16 @@ class OnlineTrainingAPP:
     def train_from_folders(
         self,
         folder_weight_dir_list,
-        epoch:int,
-        batch_size_per_gpu:int=1,
-        n_save_ckpt:int=1,
-        min_loss:float=None,
-        max_loss:float=None,
-        min_loss_fix:float=None,
-        max_loss_fix:float=None,
-        n_save_step:int=None,
-        dataloader_workers_per_gpu:int=2,
-        use_qa_mask:bool=False,
+        epoch: int,
+        batch_size_per_gpu: int = 1,
+        n_save_ckpt: int = 1,
+        min_loss: float = None,
+        max_loss: float = None,
+        min_loss_fix: float = None,
+        max_loss_fix: float = None,
+        n_save_step: int = None,
+        dataloader_workers_per_gpu: int = 2,
+        use_qa_mask: bool = False,
     ):
         min_loss = self.args.train.min_loss if min_loss is None else min_loss
         max_loss = self.args.train.max_loss if max_loss is None else max_loss
@@ -676,1408 +740,98 @@ class OnlineTrainingAPP:
         else:
             return (per_token_logps * loss_mask).sum(-1)
 
-    def calc_dpo_losses_multilabel(
-        self,
-        logits_list,
-        logits_ref_list,
-        score_list,
-        batch_tokens_list,
-        batch_masks_list,
-        threshold_score:float=2.5,
-        beta:float=0.5,
-    ):
-        def sign(x):
-            if x > 0:
-                return 1
-            elif x < 0:
-                return -1
-            else:
-                return 0
-
-        assert (
-            len(logits_list)
-            == len(logits_ref_list)
-            == len(score_list)
-            == len(batch_tokens_list)
-            == len(batch_masks_list)
-        )
-        total_pos_abs_weight = 0
-        total_neg_abs_weight = 0
-        pos_upper = None
-        neg_upper = None
-        min_score, max_score, best_lp, worse_lp, best_ref_lp, worse_ref_lp = (
-            114514,
-            -114514,
-            None,
-            None,
-            None,
-            None,
-        )
-        for logits, logits_ref, score, tokens, masks in zip(
-            logits_list,
-            logits_ref_list,
-            score_list,
-            batch_tokens_list,
-            batch_masks_list,
-        ):
-            is_postive = score > threshold_score
-            lp_ref = self._get_batch_logps(
-                logits_ref,
-                torch.tensor([tokens], dtype=torch.long),
-                torch.tensor([masks], dtype=torch.long),
-            )
-            lp = self._get_batch_logps(
-                logits,
-                torch.tensor([tokens], dtype=torch.long),
-                torch.tensor([masks], dtype=torch.long),
-            )
-            if score > max_score:
-                max_score = score
-                best_lp = lp.detach()
-                best_ref_lp = lp_ref
-            if score < min_score:
-                min_score = score
-                worse_lp = lp.detach()
-                worse_ref_lp = lp_ref
-            abs_weight = math.sqrt(abs(score - threshold_score))
-            if is_postive:
-                total_pos_abs_weight += abs_weight
-                if pos_upper is None:
-                    pos_upper = abs_weight * (lp - lp_ref)
-                else:
-                    pos_upper += abs_weight * (lp - lp_ref)
-            else:
-                total_neg_abs_weight += abs_weight
-                if neg_upper is None:
-                    neg_upper = abs_weight * (lp - lp_ref)
-                else:
-                    neg_upper += abs_weight * (lp - lp_ref)
-        pos = pos_upper / total_pos_abs_weight
-        neg = neg_upper / total_neg_abs_weight
-
-        losses = -F.logsigmoid(beta * (pos - neg))
-        chosen_rewards = beta * (best_lp - best_ref_lp).detach()
-        rejected_rewards = beta * (worse_lp - worse_ref_lp).detach()
-        return losses, chosen_rewards, rejected_rewards
-
-    def calc_dpo_losses(
-        self,
-        logits_p,
-        logits_ref_p,
-        logits_n,
-        logits_ref_n,
-        batch_pos_tokens,
-        batch_neg_tokens,
-        batch_pos_masks,
-        batch_neg_masks,
-        beta=0.5,
-    ):
-        lp_ref_p = self._get_batch_logps(
-            logits_ref_p,
-            torch.tensor(batch_pos_tokens, dtype=torch.long),
-            torch.tensor(batch_pos_masks, dtype=torch.long),
-        )
-        lp_ref_n = self._get_batch_logps(
-            logits_ref_n,
-            torch.tensor(batch_neg_tokens, dtype=torch.long),
-            torch.tensor(batch_neg_masks, dtype=torch.long),
-        )
-        lp_p = self._get_batch_logps(
-            logits_p,
-            torch.tensor(batch_pos_tokens, dtype=torch.long),
-            torch.tensor(batch_pos_masks, dtype=torch.long),
-        )
-        lp_n = self._get_batch_logps(
-            logits_n,
-            torch.tensor(batch_neg_tokens, dtype=torch.long),
-            torch.tensor(batch_neg_masks, dtype=torch.long),
-        )
-
-        losses = -F.log_softmax(beta * (lp_p - lp_ref_p - lp_n + lp_ref_n))
-        chosen_rewards = beta * (lp_p - lp_ref_p).detach()
-        rejected_rewards = beta * (lp_n - lp_ref_n).detach()
-
-        return losses, chosen_rewards, rejected_rewards
-
-    def train_dpo_v2(
-        self,
-        folder_weight_dir_list,
-        inference_service_server="http://localhost:4514/",
-        step_save_ckpt=None,
-        allow_multilabel=True,
-        n_use_max_choices=5,
-    ):
-        dataset = FolderDPODatasetV2(folder_weight_dir_list)
-
-        def test_server(server):
-            try:
-                response = requests.get(server + "/test")
-                if response.status_code == 200:
-                    return True
-                else:
-                    return False
-            except requests.exceptions.RequestException as e:
-                print(f"Exception occurred: {e}")
-                return False
-
-        assert test_server(inference_service_server)
-
-        resp = requests.post(
-            f"{inference_service_server}/regist_state_id",
-            json={},
-        ).json()
-        state_idx = resp["access_token"]
-
-        for step, ordered_data_dicts in enumerate(dataset.load_batch_datas(), 0):
-            # 每个新对话，重置state
-            state = None
-            resp = requests.post(
-                f"{inference_service_server}/reset_state_id",
-                json={"access_token": state_idx},
-            ).json()
-            for turn_choice_dict in ordered_data_dicts.values():
-                if len(turn_choice_dict) > 1:
-                    best_clist = None
-                    all_clists = []
-                    all_scores = []
-                    min_score, max_score = 114514, -114514
-                    worse_index, best_index = -1, -1
-                    lock_best = False
-                    for i, choice in enumerate(turn_choice_dict, 0):
-                        score = choice.get("score")
-                        if "best" in choice.keys():
-                            best_clist = cList.from_dicts(choice["best"])
-                            all_clists.append(best_clist)
-                            if score is None:
-                                all_scores.append(5)
-                                best_index = i
-                                max_score = 5
-                            else:
-                                score_number = int(score)
-                                all_scores.append(score_number)
-                                best_index = i
-                                lock_best = True
-                                if score_number > max_score:
-                                    max_score = score
-                        else:
-                            all_clists.append(cList.from_dicts(choice["choice"]))
-                            if score is None:
-                                all_scores.append(1)
-                                worse_index = i
-                                min_score = 1
-                            else:
-                                score_number = int(score)
-                                all_scores.append(score_number)
-                                if score_number < min_score:
-                                    min_score = score
-                                    worse_index = i
-                                if score_number > max_score:
-                                    max_score = score
-                                    best_index = i if not lock_best else best_index
-                    # 存在best标签则训练。
-                    if best_clist is not None:
-                        if not allow_multilabel:
-                            pos_conversations = best_clist.to_dict_list()
-                            neg_conversations = all_clists[worse_index].to_dict_list()
-                            pos_tokens, pos_mask = best_clist.to_tokens(
-                                global_config.tokenizer_train.encode,
-                                use_ego_mask=True,
-                                ego_mask_type="zero",
-                            )
-                            neg_tokens, neg_mask = all_clists[worse_index].to_tokens(
-                                global_config.tokenizer_train.encode,
-                                use_ego_mask=True,
-                                ego_mask_type="zero",
-                            )
-                            requests.post(
-                                f"{inference_service_server}/infer",
-                                json={
-                                    "conversations": pos_conversations,
-                                    "state_idx": state_idx,
-                                    "save_folder": dpo_cache_folder算法待修改,
-                                    "save_name": "dpo_pos",
-                                },
-                            )
-                            requests.post(
-                                f"{inference_service_server}/infer",
-                                json={
-                                    "conversations": neg_conversations,
-                                    "state_idx": state_idx,
-                                    "save_folder": dpo_cache_folder算法待修改,
-                                    "save_name": "dpo_neg",
-                                },
-                            )
-                            logits_pos_dir = os.path.join(
-                                dpo_cache_folder算法待修改, "dpo_pos.logits"
-                            )
-                            logits_neg_dir = os.path.join(
-                                dpo_cache_folder算法待修改, "dpo_neg.logits"
-                            )
-                            logits_ref_p = torch.load(logits_pos_dir)
-                            logits_ref_n = torch.load(logits_neg_dir)
-                            logits_p, _ = self.model_engine(
-                                torch.tensor([pos_tokens], dtype=torch.long), state
-                            )
-                            logits_n, _ = self.model_engine(
-                                torch.tensor([neg_tokens], dtype=torch.long), state
-                            )
-                            dpo_loss, chosen_rewards, rejected_rewards = (
-                                self.calc_dpo_losses(
-                                    logits_p,
-                                    logits_ref_p,
-                                    logits_n,
-                                    logits_ref_n,
-                                    pos_tokens,
-                                    neg_tokens,
-                                    pos_mask,
-                                    neg_mask,
-                                    train_config.dpo.beta,
-                                )
-                            )
-                            self.model_engine.backward(dpo_loss)
-                            self.model_engine.step()
-
-                            print(
-                                f"batch: {step}, conversation:{pos_conversations()} -> loss:{dpo_loss.item()}, chosen_rewards:{chosen_rewards.item()}, rejected_rewards:{rejected_rewards.item()}"
-                            )
-
-                        else:
-                            if n_use_max_choices < 0 or n_use_max_choices > len(
-                                all_clists
-                            ):
-                                train_clists = all_clists
-                                train_scores = all_scores
-                            elif n_use_max_choices <= 2:
-                                train_clists = [
-                                    all_clists[best_index],
-                                    all_clists[worse_index],
-                                ]
-                                train_scores = [
-                                    all_scores[best_index],
-                                    all_scores[worse_index],
-                                ]
-                            else:
-                                train_clists = [
-                                    all_clists[best_index],
-                                    all_clists[worse_index],
-                                ]
-                                train_scores = [
-                                    all_scores[best_index],
-                                    all_scores[worse_index],
-                                ]
-                                for index in sorted(
-                                    [best_index, worse_index], reverse=True
-                                ):
-                                    del all_scores[index], all_clists[index]
-                                assert len(all_clists) == len(all_scores)
-                                for i in range(n_use_max_choices - 2):
-                                    index = random.randint(0, len(all_clists) - 1)
-                                    train_clists.append(all_clists[index])
-                                    train_scores.append(all_scores[index])
-                                    del all_clists[index], all_scores[index]
-                            logits_list = []
-                            logits_ref_list = []
-                            batch_tokens_list = []
-                            batch_masks_list = []
-
-                            for clist in train_clists:
-                                tokens, mask = clist.to_tokens(
-                                    global_config.tokenizer_train.encode,
-                                    use_ego_mask=True,
-                                    ego_mask_type="zero",
-                                )
-                                batch_tokens_list.append(tokens)
-                                batch_masks_list.append(mask)
-                                requests.post(
-                                    f"{inference_service_server}/infer",
-                                    json={
-                                        "conversations": clist.to_dict_list(),
-                                        "state_idx": state_idx,
-                                        "save_folder": dpo_cache_folder算法待修改,
-                                        "save_name": "dpo",
-                                    },
-                                )
-                                logits_dir = os.path.join(
-                                    dpo_cache_folder算法待修改, "dpo.logits"
-                                )
-                                logits_ref = torch.load(logits_dir)
-                                logits_ref_list.append(logits_ref)
-
-                            padded_tokens_list, pad_last_indices = (
-                                pad_2d_list_with_zeros(batch_tokens_list)
-                            )
-                            batch_tokens_tensor = torch.tensor(
-                                padded_tokens_list, dtype=torch.long
-                            )  # 但是这堆token不一样长
-                            batch_logits, _ = self.model_engine(
-                                torch.tensor(batch_tokens_tensor, dtype=torch.long),
-                                (
-                                    state.duplicate(len(batch_tokens_tensor))
-                                    if state is not None
-                                    else None
-                                ),
-                            )
-                            logits_list = batch_logits.unbind(dim=0)
-                            logits_list = [
-                                logits[:last_index].unsqueeze(0)
-                                for logits, last_index in zip(
-                                    logits_list, pad_last_indices
-                                )
-                            ]
-
-                            dpo_loss, chosen_rewards, rejected_rewards = (
-                                self.calc_dpo_losses_multilabel(
-                                    logits_list,
-                                    logits_ref_list,
-                                    train_scores,
-                                    batch_tokens_list,
-                                    batch_masks_list,
-                                    beta=train_config.dpo.beta,
-                                )
-                            )
-                            self.model_engine.backward(dpo_loss)
-                            self.model_engine.step()
-                            gc.collect()
-                            torch.cuda.empty_cache()
-
-                            show_index = random.randint(0, len(train_clists) - 1)
-                            print(
-                                f"batch: {step}, conversation: \n{train_clists[show_index]()}\n, score: {train_scores[show_index]}\n-> loss:{dpo_loss.item()}, chosen_rewards:{chosen_rewards}, rejected_rewards:{rejected_rewards}"
-                            )
-
-                # 加入历史消息
-                if "best" in turn_choice_dict[-1].keys():
-                    hist_clist = cList.from_dicts(turn_choice_dict[-1]["best"])
-                else:
-                    hist_clist = cList.from_dicts(turn_choice_dict[-1]["choice"])
-                _, state = self.model_engine(
-                    torch.tensor(
-                        [hist_clist.to_tokens(global_config.tokenizer_train.encode)[0]],
-                        dtype=torch.long,
-                    ),
-                    state,
-                )
-                resp = requests.post(
-                    f"{inference_service_server}/infer",
-                    json={
-                        "conversations": hist_clist.to_dict_list(),
-                        "state_idx": state_idx,
-                        "save_logits": False,
-                        "save_to_now_state_idx": state_idx,
-                    },
-                ).json()
-
-            if step_save_ckpt and step % step_save_ckpt == 0:
-                save_path = self.save_weight(
-                    f"train_dpo_step:{step}", save_train_state=False
-                )
-                print(f"====save dpo ckpt at step: {step}, to={save_path}====")
-
-        save_path = self.save_weight(f"train_dpo_final", save_train_state=False)
-        print(f"====save dpo ckpt to={save_path}====")
-
-    def train_dpo_v2_iterator(
-        self,
-        folder_weight_dir_list,
-        inference_service_server="http://localhost:4514/",
-        step_save_ckpt=None,
-        allow_multilabel=True,
-        n_use_max_choices=5,
-    ):
-        dataset = FolderDPODatasetV2(folder_weight_dir_list)
-
-        def test_server(server):
-            try:
-                response = requests.get(server + "/test")
-                if response.status_code == 200:
-                    return True
-                else:
-                    return False
-            except requests.exceptions.RequestException as e:
-                print(f"Exception occurred: {e}")
-                return False
-
-        assert test_server(inference_service_server)
-
-        resp = requests.post(
-            f"{inference_service_server}/regist_state_id",
-            json={},
-        ).json()
-        state_idx = resp["access_token"]
-
-        for step, ordered_data_dicts in enumerate(dataset.load_batch_datas(), 0):
-            # 每个新对话，重置state
-            state = None
-            resp = requests.post(
-                f"{inference_service_server}/reset_state_id",
-                json={"access_token": state_idx},
-            ).json()
-            for turn_choice_dict in ordered_data_dicts.values():
-                if len(turn_choice_dict) > 1:
-                    best_clist = None
-                    all_clists = []
-                    all_scores = []
-                    min_score, max_score = 114514, -114514
-                    worse_index, best_index = -1, -1
-                    lock_best = False
-                    for i, choice in enumerate(turn_choice_dict, 0):
-                        score = choice.get("score")
-                        if "best" in choice.keys():
-                            best_clist = cList.from_dicts(choice["best"])
-                            all_clists.append(best_clist)
-                            if score is None:
-                                all_scores.append(5)
-                                best_index = i
-                                max_score = 5
-                            else:
-                                score_number = int(score)
-                                all_scores.append(score_number)
-                                best_index = i
-                                lock_best = True
-                                if score_number > max_score:
-                                    max_score = score
-                        else:
-                            all_clists.append(cList.from_dicts(choice["choice"]))
-                            if score is None:
-                                all_scores.append(1)
-                                worse_index = i
-                                min_score = 1
-                            else:
-                                score_number = int(score)
-                                all_scores.append(score_number)
-                                if score_number < min_score:
-                                    min_score = score
-                                    worse_index = i
-                                if score_number > max_score:
-                                    max_score = score
-                                    best_index = i if not lock_best else best_index
-                    # 存在best标签则训练。
-                    if best_clist is not None:
-                        if not allow_multilabel:
-                            pos_conversations = best_clist.to_dict_list()
-                            neg_conversations = all_clists[worse_index].to_dict_list()
-                            pos_tokens, pos_mask = best_clist.to_tokens(
-                                global_config.tokenizer_train.encode,
-                                use_ego_mask=True,
-                                ego_mask_type="zero",
-                            )
-                            neg_tokens, neg_mask = all_clists[worse_index].to_tokens(
-                                global_config.tokenizer_train.encode,
-                                use_ego_mask=True,
-                                ego_mask_type="zero",
-                            )
-                            requests.post(
-                                f"{inference_service_server}/infer",
-                                json={
-                                    "conversations": pos_conversations,
-                                    "state_idx": state_idx,
-                                    "save_folder": dpo_cache_folder算法待修改,
-                                    "save_name": "dpo_pos",
-                                },
-                            )
-                            requests.post(
-                                f"{inference_service_server}/infer",
-                                json={
-                                    "conversations": neg_conversations,
-                                    "state_idx": state_idx,
-                                    "save_folder": dpo_cache_folder算法待修改,
-                                    "save_name": "dpo_neg",
-                                },
-                            )
-                            logits_pos_dir = os.path.join(
-                                dpo_cache_folder算法待修改, "dpo_pos.logits"
-                            )
-                            logits_neg_dir = os.path.join(
-                                dpo_cache_folder算法待修改, "dpo_neg.logits"
-                            )
-                            logits_ref_p = torch.load(logits_pos_dir)
-                            logits_ref_n = torch.load(logits_neg_dir)
-                            logits_p, _ = self.model_engine(
-                                torch.tensor([pos_tokens], dtype=torch.long), state
-                            )
-                            logits_n, _ = self.model_engine(
-                                torch.tensor([neg_tokens], dtype=torch.long), state
-                            )
-                            dpo_loss, chosen_rewards, rejected_rewards = (
-                                self.calc_dpo_losses(
-                                    logits_p,
-                                    logits_ref_p,
-                                    logits_n,
-                                    logits_ref_n,
-                                    pos_tokens,
-                                    neg_tokens,
-                                    pos_mask,
-                                    neg_mask,
-                                    train_config.dpo.beta,
-                                )
-                            )
-                            self.model_engine.backward(dpo_loss)
-                            self.model_engine.step()
-
-                            print(
-                                f"batch: {step}, conversation:{pos_conversations()} -> loss:{dpo_loss.item()}, chosen_rewards:{chosen_rewards.item()}, rejected_rewards:{rejected_rewards.item()}"
-                            )
-                            yield json.dumps(
-                                {
-                                    "step": step,
-                                    "dpo_loss": dpo_loss.item(),
-                                    "chosen_rewards": float(chosen_rewards.mean()),
-                                    "rejected_rewards": float(rejected_rewards.mean()),
-                                },
-                                ensure_ascii=True,
-                            ) + "\n"
-
-                        else:
-                            if n_use_max_choices < 0 or n_use_max_choices > len(
-                                all_clists
-                            ):
-                                train_clists = all_clists
-                                train_scores = all_scores
-                            elif n_use_max_choices <= 2:
-                                train_clists = [
-                                    all_clists[best_index],
-                                    all_clists[worse_index],
-                                ]
-                                train_scores = [
-                                    all_scores[best_index],
-                                    all_scores[worse_index],
-                                ]
-                            else:
-                                train_clists = [
-                                    all_clists[best_index],
-                                    all_clists[worse_index],
-                                ]
-                                train_scores = [
-                                    all_scores[best_index],
-                                    all_scores[worse_index],
-                                ]
-                                for index in sorted(
-                                    [best_index, worse_index], reverse=True
-                                ):
-                                    del all_scores[index], all_clists[index]
-                                assert len(all_clists) == len(all_scores)
-                                for i in range(n_use_max_choices - 2):
-                                    index = random.randint(0, len(all_clists) - 1)
-                                    train_clists.append(all_clists[index])
-                                    train_scores.append(all_scores[index])
-                                    del all_clists[index], all_scores[index]
-                            logits_list = []
-                            logits_ref_list = []
-                            batch_tokens_list = []
-                            batch_masks_list = []
-
-                            for clist in train_clists:
-                                tokens, mask = clist.to_tokens(
-                                    global_config.tokenizer_train.encode,
-                                    use_ego_mask=True,
-                                    ego_mask_type="zero",
-                                )
-                                batch_tokens_list.append(tokens)
-                                batch_masks_list.append(mask)
-                                requests.post(
-                                    f"{inference_service_server}/infer",
-                                    json={
-                                        "conversations": clist.to_dict_list(),
-                                        "state_idx": state_idx,
-                                        "save_folder": dpo_cache_folder算法待修改,
-                                        "save_name": "dpo",
-                                    },
-                                )
-                                logits_dir = os.path.join(
-                                    dpo_cache_folder算法待修改, "dpo.logits"
-                                )
-                                logits_ref = torch.load(logits_dir)
-                                logits_ref_list.append(logits_ref)
-
-                            padded_tokens_list, pad_last_indices = (
-                                pad_2d_list_with_zeros(batch_tokens_list)
-                            )
-                            batch_tokens_tensor = torch.tensor(
-                                padded_tokens_list, dtype=torch.long
-                            )  # 但是这堆token不一样长
-                            batch_logits, _ = self.model_engine(
-                                torch.tensor(batch_tokens_tensor, dtype=torch.long),
-                                (
-                                    state.duplicate(len(batch_tokens_tensor))
-                                    if state is not None
-                                    else None
-                                ),
-                            )
-                            logits_list = batch_logits.unbind(dim=0)
-                            logits_list = [
-                                logits[:last_index].unsqueeze(0)
-                                for logits, last_index in zip(
-                                    logits_list, pad_last_indices
-                                )
-                            ]
-
-                            dpo_loss, chosen_rewards, rejected_rewards = (
-                                self.calc_dpo_losses_multilabel(
-                                    logits_list,
-                                    logits_ref_list,
-                                    train_scores,
-                                    batch_tokens_list,
-                                    batch_masks_list,
-                                    beta=train_config.dpo.beta,
-                                )
-                            )
-                            self.model_engine.backward(dpo_loss)
-                            self.model_engine.step()
-                            gc.collect()
-                            torch.cuda.empty_cache()
-
-                            show_index = random.randint(0, len(train_clists) - 1)
-                            print(
-                                f"batch: {step}, conversation: \n{train_clists[show_index]()}\n, score: {train_scores[show_index]}\n-> loss:{dpo_loss.item()}, chosen_rewards:{chosen_rewards}, rejected_rewards:{rejected_rewards}"
-                            )
-                            yield json.dumps(
-                                {
-                                    "step": step,
-                                    "dpo_loss": dpo_loss.item(),
-                                    "chosen_rewards": float(chosen_rewards.mean()),
-                                    "rejected_rewards": float(rejected_rewards.mean()),
-                                },
-                                ensure_ascii=True,
-                            ) + "\n"
-
-                # 加入历史消息
-                if "best" in turn_choice_dict[-1].keys():
-                    hist_clist = cList.from_dicts(turn_choice_dict[-1]["best"])
-                else:
-                    hist_clist = cList.from_dicts(turn_choice_dict[-1]["choice"])
-                _, state = self.model_engine(
-                    torch.tensor(
-                        [hist_clist.to_tokens(global_config.tokenizer_train.encode)[0]],
-                        dtype=torch.long,
-                    ),
-                    state,
-                )
-                resp = requests.post(
-                    f"{inference_service_server}/infer",
-                    json={
-                        "conversations": hist_clist.to_dict_list(),
-                        "state_idx": state_idx,
-                        "save_logits": False,
-                        "save_to_now_state_idx": state_idx,
-                    },
-                ).json()
-
-            if step_save_ckpt and step % step_save_ckpt == 0:
-                save_path = self.save_weight(
-                    f"train_dpo_step:{step}", save_train_state=False
-                )
-                print(f"====save dpo ckpt at step: {step}, to={save_path}====")
-
-        save_path = self.save_weight(f"train_dpo_final", save_train_state=False)
-        print(f"====save dpo ckpt to={save_path}====")
-        yield json.dumps(
-            {
-                "over": True,
-                "to_dir": save_path,
-            },
-            ensure_ascii=True,
-        ) + "\n"
-
-    def train_dpo_v3_iterator(
-        self,
-        folder_weight_dir_list,
-        inference_service_server="http://localhost:4514/",
-        step_save_ckpt=None,
-        allow_multilabel=True,
-        n_use_max_choices=5,
-    ):
-        dataset = FolderDPODatasetV2(folder_weight_dir_list)
-
-        def test_server(server):
-            try:
-                response = requests.get(server + "/test")
-                if response.status_code == 200:
-                    return True
-                else:
-                    return False
-            except requests.exceptions.RequestException as e:
-                print(f"Exception occurred: {e}")
-                return False
-
-        assert test_server(inference_service_server)
-
-        resp = requests.post(
-            f"{inference_service_server}/regist_state_id",
-            json={},
-        ).json()
-        state_idx = resp["access_token"]
-
-        hist_tokens = []
-        hist_masks = []
-        for step, ordered_data_dicts in enumerate(dataset.load_batch_datas(), 0):
-            # 每个新对话，重置state
-            state = None
-            resp = requests.post(
-                f"{inference_service_server}/reset_state_id",
-                json={"access_token": state_idx},
-            ).json()
-
-            for turn_choice_dict in ordered_data_dicts.values():
-                if len(turn_choice_dict) > 1:
-                    best_clist = None
-                    all_clists = []
-                    all_scores = []
-                    min_score, max_score = 114514, -114514
-                    worse_index, best_index = -1, -1
-                    lock_best = False
-                    for i, choice in enumerate(turn_choice_dict, 0):
-                        score = choice.get("score")
-                        if "best" in choice.keys():
-                            best_clist = cList.from_dicts(choice["best"])
-                            all_clists.append(best_clist)
-                            if score is None:
-                                all_scores.append(5)
-                                best_index = i
-                                max_score = 5
-                            else:
-                                score_number = int(score)
-                                all_scores.append(score_number)
-                                best_index = i
-                                lock_best = True
-                                if score_number > max_score:
-                                    max_score = score
-                        else:
-                            all_clists.append(cList.from_dicts(choice["choice"]))
-                            if score is None:
-                                all_scores.append(1)
-                                min_score = 1
-                                worse_index = i
-                            else:
-                                score_number = int(score)
-                                all_scores.append(score_number)
-                                if score_number < min_score:
-                                    min_score = score
-                                    worse_index = i
-                                if score_number > max_score:
-                                    max_score = score
-                                    best_index = i if not lock_best else best_index
-                    # 存在best标签则训练。
-                    if best_clist is not None:
-                        if not allow_multilabel:
-                            pos_tokens, pos_mask = best_clist.to_tokens(
-                                global_config.tokenizer_train.encode,
-                                use_ego_mask=True,
-                                ego_mask_type="zero",
-                            )
-                            neg_tokens, neg_mask = all_clists[worse_index].to_tokens(
-                                global_config.tokenizer_train.encode,
-                                use_ego_mask=True,
-                                ego_mask_type="zero",
-                            )
-                            pos_all_tokens = hist_tokens + pos_tokens
-                            pos_all_masks = hist_masks + pos_mask
-                            neg_all_tokens = hist_tokens + neg_tokens
-                            neg_all_masks = hist_masks + neg_mask
-
-                            resp = requests.post(
-                                f"{inference_service_server}/infer_tokenss",
-                                json={
-                                    "tokens": pos_all_tokens,
-                                    "state_idx": state_idx,
-                                    "save_to_now_state_idx": state_idx,
-                                    "save_folder": dpo_cache_folder算法待修改,
-                                    "save_name": "dpo_pos",
-                                },
-                            ).json()
-                            resp = requests.post(
-                                f"{inference_service_server}/infer_tokenss",
-                                json={
-                                    "tokens": neg_all_tokens,
-                                    "state_idx": state_idx,
-                                    "save_to_now_state_idx": state_idx,
-                                    "save_folder": dpo_cache_folder算法待修改,
-                                    "save_name": "dpo_neg",
-                                },
-                            ).json()
-                            logits_pos_dir = os.path.join(
-                                dpo_cache_folder算法待修改, "dpo_pos.logits"
-                            )
-                            logits_neg_dir = os.path.join(
-                                dpo_cache_folder算法待修改, "dpo_neg.logits"
-                            )
-                            logits_ref_p = torch.load(logits_pos_dir)
-                            logits_ref_n = torch.load(logits_neg_dir)
-                            logits_p, _ = self.model_engine(
-                                torch.tensor([pos_all_tokens], dtype=torch.long), state
-                            )
-                            logits_n, _ = self.model_engine(
-                                torch.tensor([neg_all_tokens], dtype=torch.long), state
-                            )
-                            dpo_loss, chosen_rewards, rejected_rewards = (
-                                self.calc_dpo_losses(
-                                    logits_p,
-                                    logits_ref_p,
-                                    logits_n,
-                                    logits_ref_n,
-                                    pos_all_tokens,
-                                    neg_all_tokens,
-                                    pos_all_masks,
-                                    neg_all_masks,
-                                    train_config.dpo.beta,
-                                )
-                            )
-                            self.model_engine.backward(dpo_loss)
-                            self.model_engine.step()
-
-                            pos_conversations = best_clist.to_dict_list()
-                            print(
-                                f"batch: {step}, conversation:{pos_conversations()} -> loss:{dpo_loss.item()}, chosen_rewards:{chosen_rewards.item()}, rejected_rewards:{rejected_rewards.item()}"
-                            )
-                            yield json.dumps(
-                                {
-                                    "step": step,
-                                    "dpo_loss": dpo_loss.item(),
-                                    "chosen_rewards": float(chosen_rewards.mean()),
-                                    "rejected_rewards": float(rejected_rewards.mean()),
-                                },
-                                ensure_ascii=True,
-                            ) + "\n"
-
-                        else:
-                            if n_use_max_choices < 0 or n_use_max_choices > len(
-                                all_clists
-                            ):
-                                train_clists = all_clists
-                                train_scores = all_scores
-                            elif n_use_max_choices <= 2:
-                                train_clists = [
-                                    all_clists[best_index],
-                                    all_clists[worse_index],
-                                ]
-                                train_scores = [
-                                    all_scores[best_index],
-                                    all_scores[worse_index],
-                                ]
-                            else:
-                                train_clists = [
-                                    all_clists[best_index],
-                                    all_clists[worse_index],
-                                ]
-                                train_scores = [
-                                    all_scores[best_index],
-                                    all_scores[worse_index],
-                                ]
-                                for index in sorted(
-                                    [best_index, worse_index], reverse=True
-                                ):
-                                    del all_scores[index], all_clists[index]
-                                assert len(all_clists) == len(all_scores)
-                                for i in range(n_use_max_choices - 2):
-                                    index = random.randint(0, len(all_clists) - 1)
-                                    train_clists.append(all_clists[index])
-                                    train_scores.append(all_scores[index])
-                                    del all_clists[index], all_scores[index]
-                            print("train_scores", train_scores)
-                            logits_list = []
-                            logits_ref_list = []
-                            batch_tokens_list = []
-                            batch_masks_list = []
-
-                            for clist in train_clists:
-                                tokens, mask = clist.to_tokens(
-                                    global_config.tokenizer_train.encode,
-                                    use_ego_mask=True,
-                                    ego_mask_type="zero",
-                                )
-                                batch_tokens_list.append(hist_tokens + tokens)
-                                batch_masks_list.append(hist_masks + mask)
-
-                                resp = requests.post(
-                                    f"{inference_service_server}/infer_tokenss",
-                                    json={
-                                        "tokens": hist_tokens + tokens,
-                                        "state_idx": state_idx,
-                                        "save_to_now_state_idx": state_idx,
-                                        "save_folder": dpo_cache_folder算法待修改,
-                                        "save_name": "dpo",
-                                    },
-                                ).json()
-
-                                logits_dir = os.path.join(
-                                    dpo_cache_folder算法待修改, "dpo.logits"
-                                )
-                                logits_ref = torch.load(logits_dir)
-                                logits_ref_list.append(logits_ref)
-
-                            padded_tokens_list, pad_last_indices = (
-                                pad_2d_list_with_zeros(batch_tokens_list)
-                            )
-                            batch_tokens_tensor = torch.tensor(
-                                padded_tokens_list, dtype=torch.long
-                            )  # 但是这堆token不一样长
-                            batch_logits, _ = self.model_engine(
-                                torch.tensor(batch_tokens_tensor, dtype=torch.long),
-                                (
-                                    state.duplicate(len(batch_tokens_tensor))
-                                    if state is not None
-                                    else None
-                                ),
-                            )
-                            logits_list = batch_logits.unbind(dim=0)
-                            logits_list = [
-                                logits[:last_index].unsqueeze(0)
-                                for logits, last_index in zip(
-                                    logits_list, pad_last_indices
-                                )
-                            ]
-
-                            dpo_loss, chosen_rewards, rejected_rewards = (
-                                self.calc_dpo_losses_multilabel(
-                                    logits_list,
-                                    logits_ref_list,
-                                    train_scores,
-                                    batch_tokens_list,
-                                    batch_masks_list,
-                                    beta=train_config.dpo.beta,
-                                )
-                            )
-                            self.model_engine.backward(dpo_loss)
-                            self.model_engine.step()
-
-                            gc.collect()
-                            torch.cuda.empty_cache()
-
-                            show_index = random.randint(0, len(train_clists) - 1)
-                            print(
-                                f"batch: {step}, conversation: \n{train_clists[show_index]()}\n, score: {train_scores[show_index]}\n-> loss:{dpo_loss.item()}, chosen_rewards:{chosen_rewards}, rejected_rewards:{rejected_rewards}"
-                            )
-                            yield json.dumps(
-                                {
-                                    "step": step,
-                                    "dpo_loss": dpo_loss.item(),
-                                    "chosen_rewards": float(chosen_rewards.mean()),
-                                    "rejected_rewards": float(rejected_rewards.mean()),
-                                },
-                                ensure_ascii=True,
-                            ) + "\n"
-
-                # 加入历史消息
-                if "best" in turn_choice_dict[-1].keys():
-                    hist_clist = cList.from_dicts(turn_choice_dict[-1]["best"])
-                else:
-                    hist_clist = cList.from_dicts(turn_choice_dict[-1]["choice"])
-
-                tt, mm = hist_clist.to_tokens(
-                    global_config.tokenizer_train.encode, use_ego_mask=True
-                )
-                hist_tokens += tt
-                hist_masks += mm
-                # hist_masks=[0 for _ in hist_tokens]
-                threshold = train_config.model.ctx_len // 2
-                if len(hist_tokens) > threshold:
-                    upload_tokens = hist_tokens[:-threshold]
-                    _, state = self.model_engine(
-                        torch.tensor(
-                            [upload_tokens],
-                            dtype=torch.long,
-                        ),
-                        state,
-                    )
-                    resp = requests.post(
-                        f"{inference_service_server}/infer_tokenss",
-                        json={
-                            "tokens": upload_tokens,
-                            "state_idx": state_idx,
-                            "save_to_now_state_idx": state_idx,
-                            "save_logits": False,
-                        },
-                    ).json()
-                    hist_tokens = hist_tokens[-threshold:]
-                    hist_masks = hist_masks[-threshold:]
-
-            if step_save_ckpt and step % step_save_ckpt == 0:
-                save_path = self.save_weight(
-                    f"train_dpo_step:{step}", save_train_state=False
-                )
-                print(f"====save dpo ckpt at step: {step}, to={save_path}====")
-
-        save_path = self.save_weight(f"train_dpo_final", save_train_state=False)
-        print(f"====save dpo ckpt to={save_path}====")
-        yield json.dumps(
-            {
-                "over": True,
-                "to_dir": save_path,
-            },
-            ensure_ascii=True,
-        ) + "\n"
-
-    def train_dpo_v3(
-        self,
-        folder_weight_dir_list,
-        inference_service_server="http://localhost:4514/",
-        step_save_ckpt=None,
-        allow_multilabel=True,
-        n_use_max_choices=5,
-    ):
-        dataset = FolderDPODatasetV2(folder_weight_dir_list)
-
-        def test_server(server):
-            try:
-                response = requests.get(server + "/test")
-                if response.status_code == 200:
-                    return True
-                else:
-                    return False
-            except requests.exceptions.RequestException as e:
-                print(f"Exception occurred: {e}")
-                return False
-
-        assert test_server(inference_service_server)
-
-        resp = requests.post(
-            f"{inference_service_server}/regist_state_id",
-            json={},
-        ).json()
-        state_idx = resp["access_token"]
-
-        hist_tokens = []
-        hist_masks = []
-        for step, ordered_data_dicts in enumerate(dataset.load_batch_datas(), 0):
-            # 每个新对话，重置state
-            state = None
-            resp = requests.post(
-                f"{inference_service_server}/reset_state_id",
-                json={"access_token": state_idx},
-            ).json()
-
-            for turn_choice_dict in ordered_data_dicts.values():
-                if len(turn_choice_dict) > 1:
-                    best_clist = None
-                    all_clists = []
-                    all_scores = []
-                    min_score, max_score = 114514, -114514
-                    worse_index, best_index = -1, -1
-                    lock_best = False
-                    for i, choice in enumerate(turn_choice_dict, 0):
-                        score = choice.get("score")
-                        if "best" in choice.keys():
-                            best_clist = cList.from_dicts(choice["best"])
-                            all_clists.append(best_clist)
-                            if score is None:
-                                all_scores.append(5)
-                                best_index = i
-                                max_score = 5
-                            else:
-                                score_number = int(score)
-                                all_scores.append(score_number)
-                                best_index = i
-                                lock_best = True
-                                if score_number > max_score:
-                                    max_score = score
-                        else:
-                            all_clists.append(cList.from_dicts(choice["choice"]))
-                            if score is None:
-                                all_scores.append(1)
-                                min_score = 1
-                                worse_index = i
-                            else:
-                                score_number = int(score)
-                                all_scores.append(score_number)
-                                if score_number < min_score:
-                                    min_score = score
-                                    worse_index = i
-                                if score_number > max_score:
-                                    max_score = score
-                                    best_index = i if not lock_best else best_index
-                    # 存在best标签则训练。
-                    if best_clist is not None:
-                        if not allow_multilabel:
-                            pos_tokens, pos_mask = best_clist.to_tokens(
-                                global_config.tokenizer_train.encode,
-                                use_ego_mask=True,
-                                ego_mask_type="zero",
-                            )
-                            neg_tokens, neg_mask = all_clists[worse_index].to_tokens(
-                                global_config.tokenizer_train.encode,
-                                use_ego_mask=True,
-                                ego_mask_type="zero",
-                            )
-                            pos_all_tokens = hist_tokens + pos_tokens
-                            pos_all_masks = hist_masks + pos_mask
-                            neg_all_tokens = hist_tokens + neg_tokens
-                            neg_all_masks = hist_masks + neg_mask
-
-                            resp = requests.post(
-                                f"{inference_service_server}/infer_tokenss",
-                                json={
-                                    "tokens": pos_all_tokens,
-                                    "state_idx": state_idx,
-                                    "save_to_now_state_idx": state_idx,
-                                    "save_folder": dpo_cache_folder算法待修改,
-                                    "save_name": "dpo_pos",
-                                },
-                            ).json()
-                            resp = requests.post(
-                                f"{inference_service_server}/infer_tokenss",
-                                json={
-                                    "tokens": neg_all_tokens,
-                                    "state_idx": state_idx,
-                                    "save_to_now_state_idx": state_idx,
-                                    "save_folder": dpo_cache_folder算法待修改,
-                                    "save_name": "dpo_neg",
-                                },
-                            ).json()
-                            logits_pos_dir = os.path.join(
-                                dpo_cache_folder算法待修改, "dpo_pos.logits"
-                            )
-                            logits_neg_dir = os.path.join(
-                                dpo_cache_folder算法待修改, "dpo_neg.logits"
-                            )
-                            logits_ref_p = torch.load(logits_pos_dir)
-                            logits_ref_n = torch.load(logits_neg_dir)
-                            logits_p, _ = self.model_engine(
-                                torch.tensor([pos_all_tokens], dtype=torch.long), state
-                            )
-                            logits_n, _ = self.model_engine(
-                                torch.tensor([neg_all_tokens], dtype=torch.long), state
-                            )
-                            dpo_loss, chosen_rewards, rejected_rewards = (
-                                self.calc_dpo_losses(
-                                    logits_p,
-                                    logits_ref_p,
-                                    logits_n,
-                                    logits_ref_n,
-                                    pos_all_tokens,
-                                    neg_all_tokens,
-                                    pos_all_masks,
-                                    neg_all_masks,
-                                    train_config.dpo.beta,
-                                )
-                            )
-                            self.model_engine.backward(dpo_loss)
-                            self.model_engine.step()
-
-                            pos_conversations = best_clist.to_dict_list()
-                            print(
-                                f"batch: {step}, conversation:{pos_conversations()} -> loss:{dpo_loss.item()}, chosen_rewards:{chosen_rewards.item()}, rejected_rewards:{rejected_rewards.item()}"
-                            )
-
-                        else:
-                            if n_use_max_choices < 0 or n_use_max_choices > len(
-                                all_clists
-                            ):
-                                train_clists = all_clists
-                                train_scores = all_scores
-                            elif n_use_max_choices <= 2:
-                                train_clists = [
-                                    all_clists[best_index],
-                                    all_clists[worse_index],
-                                ]
-                                train_scores = [
-                                    all_scores[best_index],
-                                    all_scores[worse_index],
-                                ]
-                            else:
-                                train_clists = [
-                                    all_clists[best_index],
-                                    all_clists[worse_index],
-                                ]
-                                train_scores = [
-                                    all_scores[best_index],
-                                    all_scores[worse_index],
-                                ]
-                                for index in sorted(
-                                    [best_index, worse_index], reverse=True
-                                ):
-                                    del all_scores[index], all_clists[index]
-                                assert len(all_clists) == len(all_scores)
-                                for i in range(n_use_max_choices - 2):
-                                    index = random.randint(0, len(all_clists) - 1)
-                                    train_clists.append(all_clists[index])
-                                    train_scores.append(all_scores[index])
-                                    del all_clists[index], all_scores[index]
-                            print("train_scores", train_scores)
-                            logits_list = []
-                            logits_ref_list = []
-                            batch_tokens_list = []
-                            batch_masks_list = []
-
-                            for clist in train_clists:
-                                tokens, mask = clist.to_tokens(
-                                    global_config.tokenizer_train.encode,
-                                    use_ego_mask=True,
-                                    ego_mask_type="zero",
-                                )
-                                batch_tokens_list.append(hist_tokens + tokens)
-                                batch_masks_list.append(hist_masks + mask)
-
-                                resp = requests.post(
-                                    f"{inference_service_server}/infer_tokenss",
-                                    json={
-                                        "tokens": hist_tokens + tokens,
-                                        "state_idx": state_idx,
-                                        "save_to_now_state_idx": state_idx,
-                                        "save_folder": dpo_cache_folder算法待修改,
-                                        "save_name": "dpo",
-                                    },
-                                ).json()
-
-                                logits_dir = os.path.join(
-                                    dpo_cache_folder算法待修改, "dpo.logits"
-                                )
-                                logits_ref = torch.load(logits_dir)
-                                logits_ref_list.append(logits_ref)
-
-                            padded_tokens_list, pad_last_indices = (
-                                pad_2d_list_with_zeros(batch_tokens_list)
-                            )
-                            batch_tokens_tensor = torch.tensor(
-                                padded_tokens_list, dtype=torch.long
-                            )  # 但是这堆token不一样长
-                            batch_logits, _ = self.model_engine(
-                                torch.tensor(batch_tokens_tensor, dtype=torch.long),
-                                (
-                                    state.duplicate(len(batch_tokens_tensor))
-                                    if state is not None
-                                    else None
-                                ),
-                            )
-                            logits_list = batch_logits.unbind(dim=0)
-                            logits_list = [
-                                logits[:last_index].unsqueeze(0)
-                                for logits, last_index in zip(
-                                    logits_list, pad_last_indices
-                                )
-                            ]
-
-                            dpo_loss, chosen_rewards, rejected_rewards = (
-                                self.calc_dpo_losses_multilabel(
-                                    logits_list,
-                                    logits_ref_list,
-                                    train_scores,
-                                    batch_tokens_list,
-                                    batch_masks_list,
-                                    beta=train_config.dpo.beta,
-                                )
-                            )
-                            self.model_engine.backward(dpo_loss)
-                            self.model_engine.step()
-
-                            gc.collect()
-                            torch.cuda.empty_cache()
-
-                            show_index = random.randint(0, len(train_clists) - 1)
-                            print(
-                                f"batch: {step}, conversation: \n{train_clists[show_index]()}\n, score: {train_scores[show_index]}\n-> loss:{dpo_loss.item()}, chosen_rewards:{chosen_rewards}, rejected_rewards:{rejected_rewards}"
-                            )
-
-                # 加入历史消息
-                if "best" in turn_choice_dict[-1].keys():
-                    hist_clist = cList.from_dicts(turn_choice_dict[-1]["best"])
-                else:
-                    hist_clist = cList.from_dicts(turn_choice_dict[-1]["choice"])
-
-                tt, mm = hist_clist.to_tokens(
-                    global_config.tokenizer_train.encode, use_ego_mask=True
-                )
-                hist_tokens += tt
-                hist_masks += mm
-                # hist_masks=[0 for _ in hist_tokens]
-                threshold = train_config.model.ctx_len // 2
-                if len(hist_tokens) > threshold:
-                    upload_tokens = hist_tokens[:-threshold]
-                    _, state = self.model_engine(
-                        torch.tensor(
-                            [upload_tokens],
-                            dtype=torch.long,
-                        ),
-                        state,
-                    )
-                    resp = requests.post(
-                        f"{inference_service_server}/infer_tokenss",
-                        json={
-                            "tokens": upload_tokens,
-                            "state_idx": state_idx,
-                            "save_to_now_state_idx": state_idx,
-                            "save_logits": False,
-                        },
-                    ).json()
-                    hist_tokens = hist_tokens[-threshold:]
-                    hist_masks = hist_masks[-threshold:]
-
-            if step_save_ckpt and step % step_save_ckpt == 0:
-                save_path = self.save_weight(
-                    f"train_dpo_step:{step}", save_train_state=False
-                )
-                print(f"====save dpo ckpt at step: {step}, to={save_path}====")
-
-        save_path = self.save_weight(f"train_dpo_final", save_train_state=False)
-        print(f"====save dpo ckpt to={save_path}====")
-
-    def build_engine(self):
-        ds_config = {
-            "bfloat16": {"enabled": "auto"},
-            "gradient_accumulation_steps": self.args.deepspeed.gradient_accumulation_steps,
-            "gradient_clipping": self.args.train.grad_cp,
-            "train_micro_batch_size_per_gpu": 1,
-        }
-        if train_config.deepspeed.zero:
-            ds_config["zero_optimization"] = {
-                "stage": train_config.deepspeed.ds_stage,
-                "allgather_partitions": True,
-                "allgather_bucket_size": 2e6,
-                "overlap_comm": True,
-                "reduce_scatter": True,
-                "reduce_bucket_size": 2e6,
-                "contiguous_gradients": True,
+    def build_engine(self, lr_init, lr_final, warmup_steps):
+        if hasattr(self, "model_engine"):
+            print("重新构建模型引擎...")
+            for param_group in self.model_engine.optimizer.param_groups:
+                param_group["lr"] = lr_init
+            self.lr_scheduler.warmup_min_lr = lr_init  # 更新学习率调度器的初始学习率
+            self.lr_scheduler.warmup_max_lr = lr_final  # 更新学习率调度器的最终学习率
+            self.lr_scheduler.warmup_num_steps = warmup_steps  # 更新学习率调度器的预热步数
+            if hasattr(self.lr_scheduler, 'last_epoch'):
+                self.lr_scheduler.last_epoch = -1  # 重置调度器状态
+            if hasattr(self.lr_scheduler,"min_lrs"):
+                for i in range(len(self.lr_scheduler.min_lrs)):
+                    self.lr_scheduler.min_lrs[i]=lr_init
+            if hasattr(self.lr_scheduler,"max_lrs"):
+                for i in range(len(self.lr_scheduler.max_lrs)):
+                    self.lr_scheduler.max_lrs[i]=lr_final
+            self.lr_scheduler.step()
+            print("=========================================")
+            for attr, value in vars(self.lr_scheduler).items():
+                print(f"{attr}: {value}")
+            print(self.lr_scheduler.warmup_min_lr)
+            return self.model_engine
+        else:
+            ds_config = {
+                "bfloat16": {"enabled": "auto"},
+                "gradient_accumulation_steps": self.args.deepspeed.gradient_accumulation_steps,
+                "gradient_clipping": self.args.train.grad_cp,
+                "train_micro_batch_size_per_gpu": 1,
             }
-
-            if train_config.deepspeed.offload_optimizer:
-                ds_config["zero_optimization"]["offload_optimizer"] = {
-                    "device": "cpu",
-                    "pin_memory": True,
-                }
-            if (
-                train_config.deepspeed.offload_param_stage3
-                and train_config.deepspeed.ds_stage == 3
-            ):
-                ds_config["zero_optimization"]["offload_param"] = {
-                    "device": "cpu",
-                    "pin_memory": True,
+            if train_config.deepspeed.zero:
+                ds_config["zero_optimization"] = {
+                    "stage": train_config.deepspeed.ds_stage,
+                    "allgather_partitions": True,
+                    "allgather_bucket_size": 2e6,
+                    "overlap_comm": True,
+                    "reduce_scatter": True,
+                    "reduce_bucket_size": 2e6,
+                    "contiguous_gradients": True,
                 }
 
-        self.optimizer = (
-            DeepSpeedCPUAdam(
-                self.model.get_optim_groups(),
-                lr=self.args.train.lr_init,
-                betas=(self.args.train.beta1, self.args.train.beta2),
-                eps=self.args.train.adam_eps,
-                adamw_mode=self.args.train.adamw_mode,
-                weight_decay=self.args.train.weight_decay,
-                amsgrad=False,
-                bias_correction=True,
-            )
-            if train_config.deepspeed.zero and train_config.deepspeed.offload_optimizer
-            else FusedAdam(
-                self.model.get_optim_groups(),
-                lr=self.args.train.lr_init,
-                betas=(self.args.train.beta1, self.args.train.beta2),
-                eps=self.args.train.adam_eps,
-                bias_correction=True,
-                adam_w_mode=self.args.train.adamw_mode,
-                weight_decay=self.args.train.weight_decay,
-                amsgrad=False,
-            )
-        )
+                if train_config.deepspeed.offload_optimizer:
+                    ds_config["zero_optimization"]["offload_optimizer"] = {
+                        "device": "cpu",
+                        "pin_memory": True,
+                    }
+                if (
+                    train_config.deepspeed.offload_param_stage3
+                    and train_config.deepspeed.ds_stage == 3
+                ):
+                    ds_config["zero_optimization"]["offload_param"] = {
+                        "device": "cpu",
+                        "pin_memory": True,
+                    }
 
-        self.lr_scheduler = deepspeed.runtime.lr_schedules.WarmupLR(
-            self.optimizer,
-            warmup_min_lr=self.args.train.lr_init,
-            warmup_max_lr=self.args.train.lr_final,
-            warmup_num_steps=self.args.train.warmup_steps,
-            warmup_type="linear",
-        )
-        self.model_engine, self.optimizer, _, _ = deepspeed.initialize(
-            model=self.model,
-            model_parameters=self.model.parameters(),
-            optimizer=self.optimizer,
-            lr_scheduler=self.lr_scheduler,
-            config=ds_config,
-        )
-        print("cuda available", torch.cuda.device_count())
+            self.optimizer = (
+                DeepSpeedCPUAdam(
+                    self.model.get_optim_groups(),
+                    lr=lr_init,
+                    betas=(self.args.train.beta1, self.args.train.beta2),
+                    eps=self.args.train.adam_eps,
+                    adamw_mode=self.args.train.adamw_mode,
+                    weight_decay=self.args.train.weight_decay,
+                    amsgrad=False,
+                    bias_correction=True,
+                )
+                if train_config.deepspeed.zero and train_config.deepspeed.offload_optimizer
+                else FusedAdam(
+                    self.model.get_optim_groups(),
+                    lr=lr_init,
+                    betas=(self.args.train.beta1, self.args.train.beta2),
+                    eps=self.args.train.adam_eps,
+                    bias_correction=True,
+                    adam_w_mode=self.args.train.adamw_mode,
+                    weight_decay=self.args.train.weight_decay,
+                    amsgrad=False,
+                )
+            )
+
+            self.lr_scheduler = deepspeed.runtime.lr_schedules.WarmupLR(
+                self.optimizer,
+                warmup_min_lr=lr_init,
+                warmup_max_lr=lr_final,
+                warmup_num_steps=warmup_steps,
+                warmup_type="linear",
+            )
+
+            self.model_engine, self.optimizer, _, _ = deepspeed.initialize(
+                model=self.model,
+                model_parameters=self.model.parameters(),
+                optimizer=self.optimizer,
+                lr_scheduler=self.lr_scheduler,
+                config=ds_config,
+            )
+            print("cuda available", torch.cuda.device_count())
         return self.model_engine
