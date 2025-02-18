@@ -198,7 +198,12 @@ class OnlineTrainingAPP:
         keep_train_states: bool = False,
         use_ego_mask: bool = False,
         ignore_ctx: bool = False,
+        lr_init: float = None,
+        lr_final: float = None,
+        warmup_steps: int = None,
     ):
+        if lr_init:
+            self.build_engine(lr_init, lr_final, warmup_steps)
         assert batch_size % self.total_gpus == 0
         dp_chunk_len = batch_size // self.total_gpus
         """
@@ -386,7 +391,12 @@ class OnlineTrainingAPP:
         dataloader_workers_per_gpu: int = 2,
         begin_with_state_dir=None,
         use_qa_mask: bool = False,
+        lr_init: float = None,
+        lr_final: float = None,
+        warmup_steps: int = None,
     ):
+        if lr_init:
+            self.build_engine(lr_init, lr_final, warmup_steps)
         min_loss = self.args.train.min_loss if min_loss is None else min_loss
         max_loss = self.args.train.max_loss if max_loss is None else max_loss
         min_loss_fix = (
@@ -562,7 +572,12 @@ class OnlineTrainingAPP:
         n_save_step: int = None,
         dataloader_workers_per_gpu: int = 2,
         use_qa_mask: bool = False,
+        lr_init: float = None,
+        lr_final: float = None,
+        warmup_steps: int = None,
     ):
+        if lr_init:
+            self.build_engine(lr_init, lr_final, warmup_steps)
         min_loss = self.args.train.min_loss if min_loss is None else min_loss
         max_loss = self.args.train.max_loss if max_loss is None else max_loss
         min_loss_fix = (
