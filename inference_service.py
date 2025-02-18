@@ -21,7 +21,6 @@ infer_app=inference_service_app.InferenceAPP()
 app=Bottle()
 
 
-# @route("/test", method="GET")
 def test():
     try:
         # 设置响应为JSON格式
@@ -34,14 +33,12 @@ def test():
         return json.dumps({"status": "error", "message": str(e)})
 
 
-# @route("/regist_state_id", method="POST")
 def regist_state_id_service():
     req = dict(request.json)
     load_dir = req.get("load_dir", None)  # 从请求中获取 tokens
     return {"access_token": infer_app.regist_state_id(load_dir)}
 
 
-# @route("/remove_state_id", method="POST")
 def remove_state_id_service():
     req = dict(request.json)
     id = req.get("access_token")  # 从请求中获取 tokens
@@ -49,7 +46,6 @@ def remove_state_id_service():
     return {"message": "success"}
 
 
-# @route("/reset_state_id", method="POST")
 def reset_state_id():
     req = dict(request.json)
     id = req.get("access_token")  # 从请求中获取 tokens
@@ -58,7 +54,6 @@ def reset_state_id():
     return {"message": "success"}
 
 
-# @route("/load_weight", method="POST")
 def load_weight_service():
     req = dict(request.json)
     load_dir = req.get("load_dir", None)  # 从请求中获取 tokens
@@ -67,7 +62,6 @@ def load_weight_service():
     return {"message": "success"}
 
 
-# @route("/load_state", method="POST")
 def load_state_service():
     req = dict(request.json)
     load_dir = req.get("load_dir")  # 从请求中获取 tokens
@@ -75,7 +69,6 @@ def load_state_service():
     return {"message": "success"}
 
 
-# @route("/save_state", method="POST")
 def save_state_service():
     req = dict(request.json)
     id = req.get("access_token")  # 从请求中获取 tokens
@@ -84,7 +77,6 @@ def save_state_service():
     return {"message": "success"}
 
 
-# @route("/copy_state", method="POST")
 def copy_state_service():
     req = dict(request.json)
     from_id = req.get("from_access_token")  # 从请求中获取 tokens
@@ -93,14 +85,11 @@ def copy_state_service():
     return {"message": "success"}
 
 
-# @route("/infer_batchs", method="POST")
 def infer_batch_service():
     req = dict(request.json)
     tokens_list = req.get("tokens_list")  # 从请求中获取 tokens
-    save_folder = req.get("save_folder")
-    save_name = req.get("save_name")
     state_idx_list = req.get("state_idx_list", None)  # 可选的 state_idx
-    need_latent = req.get("need_latent", False)  # 可选的 state_idx
+    save_cache_dir = req.get("save_cache_dir", None)  # 可选的 state_idx
     state = None
     if state_idx_list:
         for state_idx in state_idx_list:
@@ -109,14 +98,11 @@ def infer_batch_service():
             else:
                 state += infer_app.states_pool[state_idx]
     # 调用 infer 函数进行推理
-    logits, _, latent_out = infer_app.infer_batch(tokens_list, state, latent_output=True)
-    torch.save(logits.cpu(), os.path.join(save_folder, f"{save_name}.logits"))
-    if need_latent:
-        torch.save(latent_out.cpu(), os.path.join(save_folder, f"{save_name}.latent"))
+    infer_app.infer_batch(
+        tokens_list, state, latent_output=True, save_cache_dir=save_cache_dir
+    )
     return {"message": "success"}
 
-
-# @route("/infer", method="POST")
 def infer_service():
     req = dict(request.json)
     conversations = req.get("conversations")  # 从请求中获取 tokens
@@ -140,7 +126,6 @@ def infer_service():
     return {"message": "success"}
 
 
-# @route("/infer_tokens", method="POST")
 def infer_tokens_service():
     req = dict(request.json)
     tokens = req.get("tokens")  # 从请求中获取 tokens
@@ -165,7 +150,6 @@ def infer_tokens_service():
     return {"message": "success"}
 
 
-# @route("/batch_chat", method="POST")
 def batch_chat_service():
     req = dict(request.json)
     conversations = req.get("conversations")
@@ -236,7 +220,6 @@ def batch_chat_service():
         return resp
 
 
-# @route("/chat", method="POST")
 def chat_service():
     req = dict(request.json)
     conversations = req.get("conversations")
@@ -310,7 +293,6 @@ def chat_service():
         return resp
 
 
-# @route("/estimate_desire", method="POST")
 def estimate_desire_service():
     req = dict(request.json)
     # 获取请求中的 role 和 prefix
@@ -349,7 +331,7 @@ app.route("/load_weight", method="POST",callback=load_weight_service)
 app.route("/load_state", method="POST",callback=load_state_service)
 app.route("/save_state", method="POST",callback=save_state_service)
 app.route("/copy_state", method="POST",callback=copy_state_service)
-app.route("/infer_batchs", method="POST",callback=infer_batch_service)
+app.route("/infer_batch", method="POST",callback=infer_batch_service)
 app.route("/infer", method="POST",callback=infer_service)
 app.route("/infer_tokens", method="POST",callback=infer_tokens_service)
 app.route("/chat", method="POST",callback=chat_service)

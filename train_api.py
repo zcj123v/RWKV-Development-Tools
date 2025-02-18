@@ -14,7 +14,6 @@ import torch.distributed as dist
 import requests
 import asyncio
 import aiohttp
-from concurrent.futures import ThreadPoolExecutor
 from utils.train_app import OnlineTrainingAPP
 import json
 
@@ -77,6 +76,7 @@ def train_single_datafolder():
     keep_states_mode = req.get("keep_states_mode", "never")
     dataloader_workers_per_gpu = req.get("dataloader_workers_per_gpu", 4)
     begin_with_state_dir=req.get("begin_with_state_dir",None)
+    use_qa_mask = req.get("use_qa_mask", False)
     
 
     response.content_type = "application/json"
@@ -94,7 +94,8 @@ def train_single_datafolder():
         n_save_step=n_save_step,
         keep_states_mode=keep_states_mode,
         dataloader_workers_per_gpu=dataloader_workers_per_gpu,
-        begin_with_state_dir=begin_with_state_dir
+        begin_with_state_dir=begin_with_state_dir,
+        use_qa_mask=use_qa_mask,
     )
     
    
@@ -116,6 +117,7 @@ def train_from_folders():
     max_loss_fix = req.get("max_loss_fix", train_config.train.max_loss_fix)
     n_save_step = req.get("n_save_step", None)
     dataloader_workers_per_gpu = req.get("dataloader_workers_per_gpu", 2)
+    use_qa_mask = req.get("use_qa_mask", False)
     
     response.content_type = "application/json"
     return app.train_from_folders(
@@ -129,6 +131,7 @@ def train_from_folders():
         max_loss_fix=max_loss_fix,
         n_save_step=n_save_step,
         dataloader_workers_per_gpu=dataloader_workers_per_gpu,
+        use_qa_mask=use_qa_mask,
     )
 
         
@@ -168,36 +171,6 @@ def train_text_from_messages():
         ignore_ctx=ignore_ctx,
     )
     app.save_weight(save_name_last, True)
-
-
-@route("/train_dpo_from_folders", method="POST")
-def train_dpo_from_folders():
-    req = dict(request.json)
-    folder_weight_dir_list = req.get("folder_weight_dir_list", [])
-    step_save_ckpt = req.get("step_save_ckpt", None)
-    inference_service_server = req.get(
-        "inference_service_server", "http://localhost:4514"
-    )
-    allow_multilabel = req.get("allow_multilabel", True)
-    n_use_max_choices = req.get("n_use_max_choices", 5)
-    stream = req.get("stream", False)
-    if not stream:
-        app.train_dpo_v2(
-            folder_weight_dir_list=folder_weight_dir_list,
-            inference_service_server=inference_service_server,
-            step_save_ckpt=step_save_ckpt,
-            allow_multilabel=allow_multilabel,
-            n_use_max_choices=n_use_max_choices,
-        )
-
-    else:
-        return app.train_dpo_v2_iterator(
-            folder_weight_dir_list=folder_weight_dir_list,
-            inference_service_server=inference_service_server,
-            step_save_ckpt=step_save_ckpt,
-            allow_multilabel=allow_multilabel,
-            n_use_max_choices=n_use_max_choices,
-        )
 
 
 @route("/train_multimodal_from_folders", method="POST")

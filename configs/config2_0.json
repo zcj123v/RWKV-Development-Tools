@@ -115,9 +115,6 @@
             "optimzer_style": "adam",
             "adamw_mode": true,
             "my_pile_stage": 1
-        },
-        "dpo": {
-            "beta": 1
         }
     },
     "infer_service_config": {
@@ -296,5 +293,8 @@
             "questions_dir": "./benchmark/questions"
         },
         "api_hist_dir":"./api_hists"
+    },
+    "grpo":{
+
     }
 }

@@ -79,14 +79,29 @@ class InferenceAPP:
             self.states_pool[target_state_id] = self.states_pool[state_id]
 
     def infer_batch(
-        self, tokens_batches: list, state: BlockStateList = None, latent_output=False
+        self,
+        tokens_batches: list,
+        state: BlockStateList = None,
+        latent_output=False,
+        save_cache_dir=None,
     ):
         if latent_output:
             out, state, latent_out = self.model.batching(
                 tokens_batches, state, latent_output
             )
+            if save_cache_dir:
+                cache_dict={
+                    "logits": out.detach().cpu(),
+                    "latent_out": latent_out.detach().cpu(), 
+                }
+                torch.save(cache_dict, save_cache_dir)
             return out, state, latent_out
         out, state = self.model.batching(tokens_batches, state)
+        if save_cache_dir:
+            cache_dict={
+                "logits": out.detach().cpu(),
+            }
+            torch.save(cache_dict, save_cache_dir)
         return out, state
 
     def block_infer(self, tokens, state, chunk_len=512):
