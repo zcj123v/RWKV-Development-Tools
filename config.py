@@ -147,9 +147,10 @@ role = {
     "postfix": {"prefix": [], "postfix": [65535, 11]},
     "text": {"prefix": [], "postfix": []},
     "rwkv_legacy_eos": {"prefix": [], "postfix": [261]},
-    "text_no_mask": {"prefix": [], "postfix": []},
 }
 ego_types = [
+    "text",
+    "rwkv_legacy_eos",
     "think",
     "response",
     "response_voice",

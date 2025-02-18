@@ -77,6 +77,7 @@ def train_single_datafolder():
     keep_states_mode = req.get("keep_states_mode", "never")
     dataloader_workers_per_gpu = req.get("dataloader_workers_per_gpu", 4)
     begin_with_state_dir=req.get("begin_with_state_dir",None)
+    use_qa_mask = req.get("use_qa_mask", False)
     
 
     response.content_type = "application/json"
@@ -94,7 +95,8 @@ def train_single_datafolder():
         n_save_step=n_save_step,
         keep_states_mode=keep_states_mode,
         dataloader_workers_per_gpu=dataloader_workers_per_gpu,
-        begin_with_state_dir=begin_with_state_dir
+        begin_with_state_dir=begin_with_state_dir,
+        use_qa_mask=use_qa_mask,
     )
     
    
@@ -116,6 +118,7 @@ def train_from_folders():
     max_loss_fix = req.get("max_loss_fix", train_config.train.max_loss_fix)
     n_save_step = req.get("n_save_step", None)
     dataloader_workers_per_gpu = req.get("dataloader_workers_per_gpu", 2)
+    use_qa_mask = req.get("use_qa_mask", False)
     
     response.content_type = "application/json"
     return app.train_from_folders(
@@ -129,6 +132,7 @@ def train_from_folders():
         max_loss_fix=max_loss_fix,
         n_save_step=n_save_step,
         dataloader_workers_per_gpu=dataloader_workers_per_gpu,
+        use_qa_mask=use_qa_mask,
     )
 
         

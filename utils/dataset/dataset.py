@@ -37,7 +37,13 @@ voice_eos_tokens = global_config.role["voice"]["postfix"]
 
 class MultimodalDataset(Dataset):
     def __init__(
-        self, dataset_dir, tokenizer, voice_read_func, video_load_func, ctx_len
+        self,
+        dataset_dir,
+        tokenizer,
+        voice_read_func,
+        video_load_func,
+        ctx_len,
+        qa_mask_on=False,
     ):
         """
         --dataset_dir
@@ -67,6 +73,7 @@ class MultimodalDataset(Dataset):
         self.voice_read_func = voice_read_func
         self.video_load_func = video_load_func
         self.ctx_len = ctx_len
+        self.qa_mask_on = qa_mask_on
         if not os.path.exists(self.idx_dir) or not os.path.exists(
             self.dataset_metadata_dir
         ):
@@ -162,8 +169,15 @@ class MultimodalDataset(Dataset):
                     len(line_units) - len(sos_tokens) - len(eos_tokens)
                 )
                 post_masks = [conversation.postfix_mask] * len(eos_tokens)
+                qa_mask = (
+                    int(conversation.role in global_config.ego_types)
+                    if self.qa_mask_on
+                    else 1
+                )
 
-                line_masks += prefix_masks + content_masks + post_masks
+                line_masks += [
+                    ele * qa_mask for ele in prefix_masks + content_masks + post_masks
+                ]
 
             line_units += [self.eod]
             line_masks += [0]
@@ -177,7 +191,13 @@ class MultimodalDataset(Dataset):
                 line_units += sos_tokens
                 c_str = conversation()
                 line_units += self.tokenize_func(c_str) + eos_tokens
-            line_masks += [1] * len(line_units)
+            qa_mask = (
+                int(conversation.role in global_config.ego_types)
+                if self.qa_mask_on
+                else 1
+            )
+
+            line_masks += [1* qa_mask] * len(line_units) * qa_mask
             line_units += [self.eod]
             line_masks += [0]
         # rwkv dataset

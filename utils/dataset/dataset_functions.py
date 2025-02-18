@@ -256,6 +256,7 @@ class EpochSampleDataloader:
         video_load_func=None,
         ctx_len=3072,
         total_epoch=1,
+        use_qa_mask=False,
     ):
         assert len(dataset_folder_list) == len(
             n_sample_list
@@ -268,6 +269,7 @@ class EpochSampleDataloader:
                 voice_read_func,
                 video_load_func,
                 ctx_len=ctx_len,
+                qa_mask_on=use_qa_mask,
             )
             for dataset_folder in dataset_folder_list
         ]

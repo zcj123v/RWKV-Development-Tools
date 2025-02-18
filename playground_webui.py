@@ -1036,7 +1036,7 @@ with gr.Blocks() as demo:
                 value="单文件夹数据训练",
             )
 
-            # 在线学习模式部分
+            # 单文件夹数据训练部分
             with gr.Column(visible=True) as online_learning_section:
                 with gr.Row():
                     with gr.Column(scale=8):
@@ -1053,7 +1053,11 @@ with gr.Blocks() as demo:
                                 lines=1,
                                 scale=6,
                             )
-                        ollr_start_train_btn = gr.Button("开始训练")
+                        with gr.Row():
+                            ollr_use_qa_mask_checkbox = gr.Checkbox(
+                                label="使用qa mask", value=False
+                            )
+                            ollr_start_train_btn = gr.Button("开始训练",scale=2)
                     with gr.Column(scale=1):
                         with gr.Row():
                             ollr_train_epoch_input = gr.Number(label="Epoch", value=1)
@@ -1099,6 +1103,9 @@ with gr.Blocks() as demo:
                     with gr.Column():
                         fllr_epoch_input = gr.Number(label="Epoch", value=1)
                         fllr_batch_size_input = gr.Number(label="Batch Size", value=1)
+                        fllr_use_qa_mask_checkbox = gr.Checkbox(
+                            label="使用qa mask", value=False
+                        )
                     with gr.Column():
                         fllr_n_save_ckpt_epoch_input = gr.Number(
                             label="保存检查点频率 (epoch)", value=1
@@ -1184,6 +1191,7 @@ with gr.Blocks() as demo:
                     ollr_ctx_len_input,
                     ollr_multi_scale_alpha_input,
                     ollr_keep_states_mode_dropdown,
+                    ollr_use_qa_mask_checkbox,
                 ],
                 [progress_slider, train_output_info, text_loss_curve_plot],
             )
@@ -1197,6 +1205,7 @@ with gr.Blocks() as demo:
                     fllr_n_save_ckpt_epoch_input,
                     fllr_use_n_save_ckpt_step_checkbox,
                     fllr_n_save_ckpt_step_input,
+                    fllr_use_qa_mask_checkbox,
                 ],
                 [progress_slider, train_output_info, text_loss_curve_plot],
             )

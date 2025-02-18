@@ -27,6 +27,7 @@ class TrainAgent:
         multi_scale_ctx,
         multi_scale_alpha,
         keep_states_mode,
+        use_qa_mask=False,
         begin_with_state_dir=None,
     ):
         """训练单个文件夹的逻辑"""
@@ -39,6 +40,7 @@ class TrainAgent:
             "multi_scale_alpha": multi_scale_alpha,
             "keep_states_mode": keep_states_mode,
             "begin_with_state_dir": begin_with_state_dir,
+            "use_qa_mask": use_qa_mask,
         }
         text_loss_list = []
         with requests.post(
@@ -81,6 +83,7 @@ class TrainAgent:
         n_save_ckpt,
         save_step_on=False,
         n_save_step=None,
+        use_qa_mask=False,
     ):
         """训练多个文件夹的逻辑"""
         n_save_step = n_save_step if save_step_on else None
@@ -89,6 +92,7 @@ class TrainAgent:
             "batch_size_per_gpu": batch_size_per_gpu,
             "n_save_ckpt": n_save_ckpt,
             "n_save_step": n_save_step,
+            "use_qa_mask": use_qa_mask,
         }
         variables["folder_weight_dir_list"] = json.loads(folder_weight_dir_list)
         text_loss_list = []

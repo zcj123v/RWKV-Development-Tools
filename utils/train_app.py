@@ -321,6 +321,7 @@ class OnlineTrainingAPP:
         keep_states_mode: str = "never",
         dataloader_workers_per_gpu: int = 2,
         begin_with_state_dir=None,
+        use_qa_mask: bool = False,
     ):
         min_loss = self.args.train.min_loss if min_loss is None else min_loss
         max_loss = self.args.train.max_loss if max_loss is None else max_loss
@@ -369,6 +370,7 @@ class OnlineTrainingAPP:
             voice_read_func=None if not global_config.voice_on else read_bin_wav,
             video_load_func=None,
             ctx_len=multi_scale_ctx,
+            qa_mask_on=use_qa_mask,
         )
 
         dataloader = TraversalDataloader(
@@ -495,6 +497,7 @@ class OnlineTrainingAPP:
         max_loss_fix:float=None,
         n_save_step:int=None,
         dataloader_workers_per_gpu:int=2,
+        use_qa_mask:bool=False,
     ):
         min_loss = self.args.train.min_loss if min_loss is None else min_loss
         max_loss = self.args.train.max_loss if max_loss is None else max_loss
@@ -526,6 +529,7 @@ class OnlineTrainingAPP:
             video_load_func=None,
             ctx_len=self.args.model.ctx_len,
             total_epoch=epoch,
+            use_qa_mask=use_qa_mask,
         )
         stream_processor = UnitStreamProcessor(train_config)
 
