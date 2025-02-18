@@ -29,6 +29,9 @@ class TrainAgent:
         keep_states_mode,
         use_qa_mask=False,
         begin_with_state_dir=None,
+        lr_init: float = None,
+        lr_final: float = None,
+        warmup_steps: int = None,
     ):
         """训练单个文件夹的逻辑"""
         variables = {
@@ -41,6 +44,9 @@ class TrainAgent:
             "keep_states_mode": keep_states_mode,
             "begin_with_state_dir": begin_with_state_dir,
             "use_qa_mask": use_qa_mask,
+            "lr_init": lr_init,
+            "lr_final": lr_final,
+            "warmup_steps": warmup_steps,
         }
         text_loss_list = []
         with requests.post(
@@ -84,6 +90,9 @@ class TrainAgent:
         save_step_on=False,
         n_save_step=None,
         use_qa_mask=False,
+        lr_init: float = None,
+        lr_final: float = None,
+        warmup_steps: int = None,
     ):
         """训练多个文件夹的逻辑"""
         n_save_step = n_save_step if save_step_on else None
@@ -93,6 +102,9 @@ class TrainAgent:
             "n_save_ckpt": n_save_ckpt,
             "n_save_step": n_save_step,
             "use_qa_mask": use_qa_mask,
+            "lr_init": lr_init,
+            "lr_final": lr_final,
+            "warmup_steps": warmup_steps,
         }
         variables["folder_weight_dir_list"] = json.loads(folder_weight_dir_list)
         text_loss_list = []

@@ -1,7 +1,9 @@
 import os
+
 os.environ["WORKING_MODE"] = "train_service"
 
 from gevent import monkey
+
 monkey.patch_all()
 from config import global_config
 
@@ -14,6 +16,7 @@ import torch.distributed as dist
 import requests
 import asyncio
 import aiohttp
+from concurrent.futures import ThreadPoolExecutor
 from utils.train_app import OnlineTrainingAPP
 import json
 
@@ -49,8 +52,15 @@ def save():
 @route("/load_model", method="POST")
 def load_model():
     req = dict(request.json)
+
     ckpt_dir = req.get("load_dir", "")
-    app.load_model(ckpt_dir)
+    lr_init = req.get("lr_init", None)
+    lr_final = req.get("lr_final", None)
+    warmup_steps = req.get("warmup_steps", None)
+
+    app.load_model(
+        ckpt_dir, lr_init=lr_init, lr_final=lr_final, warmup_steps=warmup_steps
+    )
     return {"message": "success"}
 
 
@@ -75,9 +85,11 @@ def train_single_datafolder():
     n_save_step = req.get("n_save_step", None)
     keep_states_mode = req.get("keep_states_mode", "never")
     dataloader_workers_per_gpu = req.get("dataloader_workers_per_gpu", 4)
-    begin_with_state_dir=req.get("begin_with_state_dir",None)
+    begin_with_state_dir = req.get("begin_with_state_dir", None)
     use_qa_mask = req.get("use_qa_mask", False)
-    
+    lr_init = req.get("lr_init", None)
+    lr_final = req.get("lr_final", None)
+    warmup_steps = req.get("warmup_steps", None)
 
     response.content_type = "application/json"
     return app.train_from_folder(
@@ -96,11 +108,11 @@ def train_single_datafolder():
         dataloader_workers_per_gpu=dataloader_workers_per_gpu,
         begin_with_state_dir=begin_with_state_dir,
         use_qa_mask=use_qa_mask,
+        lr_init=lr_init,
+        lr_final=lr_final,
+        warmup_steps=warmup_steps,
     )
-    
-   
-        
-        
+
 
 @route("/train_from_folders", method="POST")
 def train_from_folders():
@@ -118,7 +130,10 @@ def train_from_folders():
     n_save_step = req.get("n_save_step", None)
     dataloader_workers_per_gpu = req.get("dataloader_workers_per_gpu", 2)
     use_qa_mask = req.get("use_qa_mask", False)
-    
+    lr_init = req.get("lr_init", None)
+    lr_final = req.get("lr_final", None)
+    warmup_steps = req.get("warmup_steps", None)
+
     response.content_type = "application/json"
     return app.train_from_folders(
         folder_weight_dir_list=folder_weight_dir_list,
@@ -132,9 +147,12 @@ def train_from_folders():
         n_save_step=n_save_step,
         dataloader_workers_per_gpu=dataloader_workers_per_gpu,
         use_qa_mask=use_qa_mask,
+        lr_init=lr_init,
+        lr_final=lr_final,
+        warmup_steps=warmup_steps,
     )
 
-        
+
 @route("/train_text_from_messages", method="POST")
 def train_text_from_messages():
     req = dict(request.json)
@@ -156,6 +174,10 @@ def train_text_from_messages():
     use_ego_mask = req.get("use_ego_mask", False)
     ignore_ctx = req.get("ignore_ctx", False)
     save_name_last = req.get("save_name_last", "last")
+    
+    lr_init = req.get("lr_init", None)
+    lr_final = req.get("lr_final", None)
+    warmup_steps = req.get("warmup_steps", None)
     app.train_text_from_messages(
         messages=messages,
         batch_size=batch_size,
@@ -169,21 +191,12 @@ def train_text_from_messages():
         keep_train_states=keep_train_states,
         use_ego_mask=use_ego_mask,
         ignore_ctx=ignore_ctx,
+        lr_init=lr_init,
+        lr_final=lr_final,
+        warmup_steps=warmup_steps,
     )
     app.save_weight(save_name_last, True)
 
-
-@route("/train_multimodal_from_folders", method="POST")
-def train_multimodal_from_folders():
-    req = dict(request.json)
-    folder_weight_dir_list = req.get("folder_weight_dir_list", [])
-    epoch = req.get("epoch", 1)
-    train_ctx = req.get("train_ctx", 256)
-    multi_scale_ctx = req.get("multi_scale_ctx", None)
-    multi_scale_alpha = req.get("multi_scale_alpha", None)
-    app.train_multimodal(
-        folder_weight_dir_list, epoch, train_ctx, multi_scale_ctx, multi_scale_alpha
-    )
 
 
 async def distribute_package(received_package, route):
