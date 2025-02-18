@@ -757,7 +757,7 @@ class OnlineTrainingAPP:
 
     def build_engine(self, lr_init, lr_final, warmup_steps):
         if hasattr(self, "model_engine"):
-            print("重新构建模型引擎...")
+            print("调整引擎调度器参数...")
             for param_group in self.model_engine.optimizer.param_groups:
                 param_group["lr"] = lr_init
             self.lr_scheduler.warmup_min_lr = lr_init  # 更新学习率调度器的初始学习率
