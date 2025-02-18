@@ -28,10 +28,10 @@ class TrainAgent:
         multi_scale_alpha,
         keep_states_mode,
         use_qa_mask=False,
-        begin_with_state_dir=None,
         lr_init: float = None,
         lr_final: float = None,
         warmup_steps: int = None,
+        begin_with_state_dir=None,
     ):
         """训练单个文件夹的逻辑"""
         variables = {
