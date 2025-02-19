@@ -118,7 +118,7 @@ def infer_service():
     (
         logits,
         state,
-    ) = infer_app.model(tokens, state)
+    ) = infer_app.model.infer(tokens, state)
     if save_to_now_state_idx:
         infer_app.states_pool[save_to_now_state_idx] = state
     if save_logits:
@@ -139,7 +139,7 @@ def infer_tokens_service():
     (
         logits,
         state,
-    ) = infer_app.model(tokens, state)
+    ) = infer_app.model.infer(tokens, state)
     if save_to_now_state_idx:
         infer_app.states_pool[save_to_now_state_idx] = state
     if save_logits:

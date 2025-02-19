@@ -15,6 +15,7 @@ from RWKV.v6.state import BlockStateList
 from .lora import LoraLinear
 from .vocoder import AdapterE, VoiceDecoder, TrackMixing
 from functools import partial
+from typing import Union, Optional, List
 
 
 class RWKV(nn.Module):
@@ -302,10 +303,16 @@ class RWKV(nn.Module):
 
         return out_latent, logits, new_states
 
-    def forward(self, idx, states=None, overwrite_states=False):
+    def forward(
+        self,
+        idx: Union[torch.Tensor, list],
+        states: BlockStateList = None,
+        overwrite_states: bool = False,
+        latent_output=False,
+    ):
         args = self.args
         # idx [B,N]
-        idx = idx.to(next(self.parameters()).device, dtype=torch.long)
+        idx = torch.tensor(idx, device=next(self.parameters()).device, dtype=torch.long)
 
         B, T = idx.size()
         C = args.n_embd
@@ -357,12 +364,16 @@ class RWKV(nn.Module):
             else:
                 x, state = block(x, state)
             new_states[i] = state
-
+            
+        if latent_output:
+            latent = x
         x = self.ln_out(x)
         logits = self.head(x)
-
+        
+        if latent_output:
+            return logits, new_states, latent
         return logits, new_states
-
+    
     def load_lora(self, weight, debug=True):
         if len(self.args.lora.path) != 0:
             try:

@@ -43,7 +43,7 @@ class InferenceAPP:
         last_len = len(t_batches[0])
         assert all(len(x) == last_len for x in t_batches)
         while last_len > 0:
-            out, state = self.model.batching(t_batches, state)
+            out, state = self.model(t_batches, state)
             tokens_batches = [x[chunk_len:] for x in tokens_batches]
             t_batches = [x[:chunk_len] for x in tokens_batches]
             last_len = len(t_batches[0])
@@ -86,7 +86,7 @@ class InferenceAPP:
         save_cache_dir=None,
     ):
         if latent_output:
-            out, state, latent_out = self.model.batching(
+            out, state, latent_out = self.model(
                 tokens_batches, state, latent_output
             )
             if save_cache_dir:
@@ -96,7 +96,7 @@ class InferenceAPP:
                 }
                 torch.save(cache_dict, save_cache_dir)
             return out, state, latent_out
-        out, state = self.model.batching(tokens_batches, state)
+        out, state = self.model(tokens_batches, state)
         if save_cache_dir:
             cache_dict={
                 "logits": out.detach().cpu(),
@@ -109,7 +109,7 @@ class InferenceAPP:
         tokens = [int(x) for x in tokens]
         # print(f'### model ###\n{tokens}\n[{pipeline.decode(model_tokens)}]')
         while len(tokens) > 0:
-            out, state = self.model(tokens[:chunk_len], state)
+            out, state = self.model.infer(tokens[:chunk_len], state)
             tokens = tokens[chunk_len:]
         return out, state
 
@@ -234,7 +234,7 @@ class InferenceAPP:
                             if s and token == s[0] and s[1:]
                         ]
                         # print("select->" ,select_tokens)
-                        out, new_state = self.model([token], new_state)
+                        out, new_state = self.model.infer([token], new_state)
                         tokens += [token]
                         if token_out:
                             yield token
@@ -310,12 +310,12 @@ class InferenceAPP:
                             occurrence[token] = 1
                         else:
                             occurrence[token] += 1
-                        out, new_state = self.model([token], new_state)
+                        out, new_state = self.model.infer([token], new_state)
                         tokens += [token]
                         count += 1
                         if token in stop or i == max_len - 1:  # 结束
                             if supplement:
-                                out, new_state = self.model(supplement, new_state)
+                                out, new_state = self.model.infer(supplement, new_state)
                                 tokens.pop()
                                 count -= 1
                             if count > 0:
@@ -389,14 +389,14 @@ class InferenceAPP:
                     occurrence[token] = 1
                 else:
                     occurrence[token] += 1
-                out, new_state = self.model([token], new_state)
+                out, new_state = self.model.infer([token], new_state)
                 tokens += [token]
                 count += 1
                 if token in stop_with_tokens or i == max_resp_len - 1:  # 结束
                     tokens.pop()
                     count -= 1
                     if stop_supp_tokens:
-                        out, new_state = self.model(stop_supp_tokens, new_state)
+                        out, new_state = self.model.infer(stop_supp_tokens, new_state)
                     if count > 0:
                         count = 0
                         txt = self.tokenizer.decode(tokens[start_index:])

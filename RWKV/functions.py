@@ -247,7 +247,7 @@ def speak_next_token_batch(
     token_ban=[],
 ):
     assert len(batch_occurrence) == last_tokens_batch.shape[0]
-    logits, states = rwkv.batching(
+    logits, states = rwkv(
         last_tokens_batch,
         states,
     )
@@ -340,7 +340,7 @@ def batch_generate(
                             [[m_postfix_token]], dtype=torch.long
                         ).to(next(rwkv.parameters()).device)
                         target_state = states.batchof(b)
-                        _, new_target_state = rwkv.batching(postfix, target_state)
+                        _, new_target_state = rwkv(postfix, target_state)
                         print(target_state.shift_states.size())
                         print(new_target_state.shift_states.size())
                         out_states.shift_states[:, :, b, :] = copy.deepcopy(
