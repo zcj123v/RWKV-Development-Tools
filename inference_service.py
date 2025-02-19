@@ -152,9 +152,7 @@ def infer_tokens_service():
 
 def batch_chat_service():
     req = dict(request.json)
-    conversations = req.get("conversations")
-    resp_start_with_role = req.get("resp_start_with_role")
-    resp_start_with_str = req.get("resp_start_with_str")
+    start_with_tokens_batch = req.get("start_with_tokens_batch")
     stop_with_tokens = req.get("stop_with_tokens")
     stop_supp_tokens = req.get("stop_supp_tokens", [])
     temp = req.get("temp", 1.0)
@@ -162,62 +160,30 @@ def batch_chat_service():
     presence_penalty = req.get("presence_penalty", 0.2)
     frequency_penalty = req.get("frequency_penalty", 0.2)
     decay_penalty = req.get("decay_penalty", 0.9961)
-    use_now_state_idx = req.get("use_now_state_idx", None)
-    save_to_now_state_idx = req.get("save_to_now_state_idx", None)
+    use_now_state_idx_batch = req.get("use_now_state_idx", None)
+    save_to_now_state_idx_batch = req.get("save_to_now_state_idx", None)
     max_resp_len = req.get("max_resp_len", 512)
-    stream_chunk = req.get("stream_chunk", 9)
-    stream = req.get("stream", False)
-    format_constrain_str = req.get("format_constrain_str", None)
     token_ban = req.get("token_ban", [])
-    init_occurence = req.get("init_occurence", {})
 
-    resp_start_with_tokens = global_config.role[resp_start_with_role][
-        "prefix"
-    ] + infer_app.tokenizer.encode(resp_start_with_str)
-    conversations = cList.from_dicts(conversations) if conversations else None
 
-    if stream:
-        return infer_app.batch_chat(
-            conversations=conversations,
-            resp_start_with_tokens=resp_start_with_tokens,
-            stop_with_tokens=stop_with_tokens,
-            stop_supp_tokens=stop_supp_tokens,
-            temp=temp,
-            top_p=top_p,
-            presence_penalty=presence_penalty,
-            frequency_penalty=frequency_penalty,
-            decay_penalty=decay_penalty,
-            use_now_state_idx=use_now_state_idx,
-            save_to_now_state_idx=save_to_now_state_idx,
-            max_resp_len=max_resp_len,
-            stream_chunk=stream_chunk,
-            format_constrain_str=format_constrain_str,
-            token_ban=token_ban,
-            occurence=init_occurence,
-        )
-    else:
-        resp = ""
-        for seg in infer_app.batch_chat(
-            conversations=conversations,
-            resp_start_with_tokens=resp_start_with_tokens,
-            stop_with_tokens=stop_with_tokens,
-            stop_supp_tokens=stop_supp_tokens,
-            temp=temp,
-            top_p=top_p,
-            presence_penalty=presence_penalty,
-            frequency_penalty=frequency_penalty,
-            decay_penalty=decay_penalty,
-            use_now_state_idx=use_now_state_idx,
-            save_to_now_state_idx=save_to_now_state_idx,
-            max_resp_len=max_resp_len,
-            stream_chunk=stream_chunk,
-            format_constrain_str=format_constrain_str,
-            token_ban=token_ban,
-            occurence=init_occurence,
-        ):
-            next_txt = seg["next"]
-            resp += next_txt
-        return resp
+    speak_tokens_batch, speak_texts_batch = infer_app.batch_chat(
+        start_with_tokens_batch=start_with_tokens_batch,
+        stop_with_tokens=stop_with_tokens,
+        stop_supp_tokens=stop_supp_tokens,
+        temp=temp,
+        top_p=top_p,
+        presence_penalty=presence_penalty,
+        frequency_penalty=frequency_penalty,
+        decay_penalty=decay_penalty,
+        use_now_state_idx_batch=use_now_state_idx_batch,
+        save_to_now_state_idx_batch=save_to_now_state_idx_batch,
+        max_resp_len=max_resp_len,
+        token_ban=token_ban,
+    )
+    return {
+        "speak_tokens_batch": speak_tokens_batch,
+        "speak_texts_batch": speak_texts_batch,
+    }
 
 
 def chat_service():

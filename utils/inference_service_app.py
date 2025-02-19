@@ -7,7 +7,7 @@ from utils.message_manager import Conversation, cList
 from utils.collections import parse_format_constrain_str
 from config import RWKVInfer as RWKV
 from typing import List
-from RWKV.functions import sample_logits, ppl
+from RWKV.functions import sample_logits, ppl, batch_block_infer, batch_chat
 from config import BlockStateList
 import torch
 import sys, gc
@@ -15,8 +15,6 @@ import uuid
 import json
 import re
 from utils import batching_inference_helper
-import socket
-import time
 
 
 class InferenceAPP:
@@ -28,26 +26,11 @@ class InferenceAPP:
         self.res_buffer = {}
         self.broadcast_host = global_config.server_config.infer.batching_broadcast_host
         self.broadcast_port = global_config.server_config.infer.batching_broadcast_port
-        self.batch_helper = batching_inference_helper.BatchingInferenceHelper(
-            self.batch_block_infer,
-            max_bsz=5,
-            broadcast_host=self.broadcast_host,
-            broadcast_port=self.broadcast_port,
-        )
 
     def batch_block_infer(
         self, tokens_batches: list, state: BlockStateList, chunk_len: int = 512
     ):
-        out = None
-        t_batches = [x[:chunk_len] for x in tokens_batches]
-        last_len = len(t_batches[0])
-        assert all(len(x) == last_len for x in t_batches)
-        while last_len > 0:
-            out, state = self.model(t_batches, state)
-            tokens_batches = [x[chunk_len:] for x in tokens_batches]
-            t_batches = [x[:chunk_len] for x in tokens_batches]
-            last_len = len(t_batches[0])
-        return out, state
+        return batch_block_infer(self.model, tokens_batches, state, chunk_len)
 
     def regist_state_id(self, load_dir: str = None):
         state_id = "sk-" + str(uuid.uuid4())
@@ -86,19 +69,17 @@ class InferenceAPP:
         save_cache_dir=None,
     ):
         if latent_output:
-            out, state, latent_out = self.model(
-                tokens_batches, state, latent_output
-            )
+            out, state, latent_out = self.model(tokens_batches, state, latent_output)
             if save_cache_dir:
-                cache_dict={
+                cache_dict = {
                     "logits": out.detach().cpu(),
-                    "latent_out": latent_out.detach().cpu(), 
+                    "latent_out": latent_out.detach().cpu(),
                 }
                 torch.save(cache_dict, save_cache_dir)
             return out, state, latent_out
         out, state = self.model(tokens_batches, state)
         if save_cache_dir:
-            cache_dict={
+            cache_dict = {
                 "logits": out.detach().cpu(),
             }
             torch.save(cache_dict, save_cache_dir)
@@ -444,8 +425,7 @@ class InferenceAPP:
 
     def batch_chat(
         self,
-        conversations: cList,
-        resp_start_with_tokens: List[int],
+        start_with_tokens_batch: List[List[int]],
         stop_with_tokens: List[int],
         stop_supp_tokens: List[int],
         temp: float,
@@ -453,129 +433,67 @@ class InferenceAPP:
         presence_penalty: float,
         frequency_penalty: float,
         decay_penalty: float,
-        use_now_state_idx=None,
-        save_to_now_state_idx=None,
+        use_now_state_idx_batch=None,
+        save_to_now_state_idx_batch=None,
         max_resp_len: int = 512,
-        stream_chunk=9,
-        format_constrain_str=None,
         token_ban=[],
-        occurence={},
     ):
-        if use_now_state_idx is None:
-            user_id = self.regist_state_id()
+        """
+        效率有待改进，暂时用这个
+        """
+        B = len(start_with_tokens_batch)
+
+        # 组装states
+        if use_now_state_idx_batch is None:
+            states = BlockStateList.create(
+                self.model.args.n_layer,
+                B,
+                self.model.args.n_embd,
+                self.model.args.n_head,
+                self.model.args.head_size,
+                next(self.model.parameters()).device,
+                next(self.model.parameters()).dtype,
+            )
         else:
-            user_id = use_now_state_idx
+            assert len(use_now_state_idx_batch) == B
+            states = []
+            for i in use_now_state_idx_batch:
+                state = self.states_pool[i]
+                if state is None:
+                    state = BlockStateList.create(
+                        self.model.args.n_layer,
+                        1,
+                        self.model.args.n_embd,
+                        self.model.args.n_head,
+                        self.model.args.head_size,
+                        next(self.model.parameters()).device,
+                        next(self.model.parameters()).dtype,
+                    )
+                states.append(state)
+            states = sum(states[1:], states[0])
 
-        self.batch_helper.add_task(
-            user_id,
-            self.states_pool[user_id],
-            (
-                conversations.to_tokens(self.tokenizer.encode)[0]
-                + resp_start_with_tokens
-                if conversations
-                else resp_start_with_tokens if resp_start_with_tokens else [0]
-            ),
-            temp,
-            top_p,
-            presence_penalty,
-            frequency_penalty,
-            decay_penalty,
-            format_constrain_str,
-            stop_with_tokens,
-            stop_supp_tokens,
-            max_resp_len,
-            token_ban,
-            occurence,
+        speak_sequences_batch, speak_texts_batch, out_states = batch_chat(
+            rwkv=self.model,
+            start_with_tokens_batch=start_with_tokens_batch,
+            tokenizer=self.tokenizer,
+            stop_with_tokens=stop_with_tokens,
+            stop_supp_tokens=stop_supp_tokens,
+            temp=temp,
+            top_p=top_p,
+            presence_penalty=presence_penalty,
+            frequency_penalty=frequency_penalty,
+            decay_penalty=decay_penalty,
+            batch_state=states,
+            max_resp_len=max_resp_len,
+            token_ban=token_ban,
         )
-        stream_tokens = []
-        count = 0
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        server_socket.bind(
-            (self.broadcast_host, self.broadcast_port)
-        )  
 
-        while True:
-            time.sleep(0.0001)
-            message, client_address = server_socket.recvfrom(4096)
-            message_str = message.decode()
-            message_json = json.loads(message_str)
-            if user_id in message_json:
-                return_dict = message_json[user_id]
-                # resp_tokens=return_dict["resp_tokens"]
-                # iter_tokens=return_dict["iter_tokens"]
-                # state=return_dict["state"]
-                # in_ppls=return_dict["in_ppls"]
-                # out_ppls=return_dict["out_ppls"]
-                # occurence=return_dict["occurence"]
-                over = return_dict["over"]
-                success = return_dict["success"]
+        out_states = out_states.unbind()
+        if save_to_now_state_idx_batch is not None:
+            for i, state in enumerate(out_states):
+                self.states_pool[save_to_now_state_idx_batch[i]] = state
 
-                matching_task = next(
-                    (
-                        task
-                        for task in self.batch_helper.batch_tasks
-                        if task.user_id == user_id
-                    ),
-                    None,
-                )
-                if not success:
-                    break
-                if over:
-                    if stream_tokens:
-                        next_texts = self.tokenizer.decode(stream_tokens)
-                        stream_tokens.clear()
-                        if save_to_now_state_idx:
-                            self.states_pool[save_to_now_state_idx] = (
-                                matching_task.state
-                            )
-
-                        in_ppls = matching_task.in_ppls
-                        out_ppls = matching_task.out_ppls
-                        
-                        self.batch_helper.batch_tasks.remove(matching_task)
-                        package = {
-                            "next": next_texts,
-                            "in_ppls": in_ppls,
-                            "out_ppls": out_ppls,
-                        }
-                        yield json.dumps(package, ensure_ascii=True) + "\n"
-                        
-                    break
-                if matching_task is not None:
-                    stream_tokens += matching_task.iter_tokens
-                    if len(stream_tokens) > stream_chunk:
-                        next_texts = self.tokenizer.decode(stream_tokens)
-                        stream_tokens.clear()
-                        if save_to_now_state_idx:
-                            self.states_pool[save_to_now_state_idx] = (
-                                matching_task.state
-                            )
-
-                        in_ppls = matching_task.in_ppls
-                        out_ppls = matching_task.out_ppls
-                        
-
-                        package = {
-                            "next": next_texts,
-                            "in_ppls": in_ppls,
-                            "out_ppls": out_ppls,
-                        }
-                        yield json.dumps(package, ensure_ascii=True) + "\n"
-
-
-
-    # def udp_server():
-    #     server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    #     server_socket.bind(("0.0.0.0", 12345))  # 监听所有网卡的 12345 端口
-
-    #     print("UDP server listening on port 12345...")
-
-    #     while True:
-    #         message, client_address = server_socket.recvfrom(1024)  # 1024 字节为最大接收数据量
-    #         print(f"Received message: {message.decode()} from {client_address}")
-
-    # if __name__ == "__main__":
-    #     udp_server()
+        return speak_sequences_batch, speak_texts_batch
 
     def estimate_desires(
         self,

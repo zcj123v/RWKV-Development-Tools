@@ -367,6 +367,106 @@ def batch_generate(
     return speak_sequences, out_states
 
 
+def batch_block_infer(
+    rwkv, tokens_batches: list, state: BlockStateList, chunk_len: int = 512
+):
+    out = None
+    t_batches = [x[:chunk_len] for x in tokens_batches]
+    last_len = len(t_batches[0])
+    assert all(len(x) == last_len for x in t_batches)
+    while last_len > 0:
+        out, state = rwkv(t_batches, state)
+        tokens_batches = [x[chunk_len:] for x in tokens_batches]
+        t_batches = [x[:chunk_len] for x in tokens_batches]
+        last_len = len(t_batches[0])
+    return out, state
+
+
+def batch_chat(
+    rwkv,
+    start_with_tokens_batch: List[List[int]],
+    tokenizer,
+    stop_with_tokens: List[int],
+    stop_supp_tokens: List[int],
+    temp: float,
+    top_p: float,
+    presence_penalty: float,
+    frequency_penalty: float,
+    decay_penalty: float,
+    batch_state: BlockStateList = None,
+    max_resp_len: int = 512,
+    token_ban=[],
+):
+    """
+    效率有待改进，暂时用这个
+    """
+    B = len(start_with_tokens_batch)
+
+    # 组装states
+    if batch_state is None:
+        states = [
+            BlockStateList.create(
+                rwkv.args.n_layer,
+                1,
+                rwkv.args.n_embd,
+                rwkv.args.n_head,
+                rwkv.args.head_size,
+                next(rwkv.parameters()).device,
+                next(rwkv.parameters()).dtype,
+            )
+            for _ in range(B)
+        ]
+    else:
+        states = batch_state.unbind()
+        assert len(states) == B
+
+    # 判断start_with_tokens_batch中所有元素都长度相等
+    if all(len(x) == len(start_with_tokens_batch[0]) for x in start_with_tokens_batch):
+        out, states_in = batch_block_infer(
+            rwkv,
+            [x[:-1] for x in start_with_tokens_batch],
+            sum(states[1:], states[0]),
+            512,
+        )
+    else:
+        new_states = []
+        for i in range(B):
+            out, new_state = batch_block_infer(
+                rwkv,
+                [x[:-1] for x in start_with_tokens_batch[i : i + 1]],
+                states[i],
+                512,
+            )
+            new_states.append(new_state)
+
+        states_in = sum(new_states[1:], new_states[0])
+
+    start_with_batch_tokens = torch.tensor(
+        [x[-1:] for x in start_with_tokens_batch],
+        dtype=torch.long,
+        device=next(rwkv.parameters()).device,
+    )
+
+    # 开始推理
+    speak_sequences_batch, out_states = batch_generate(
+        rwkv,
+        start_with_batch_tokens,
+        states_in,
+        temp,
+        top_p,
+        presence_penalty,
+        frequency_penalty,
+        decay_penalty,
+        token_stop=stop_with_tokens,
+        max_tokens=max_resp_len,
+        m_postfix_token=stop_supp_tokens,
+        token_ban=token_ban,
+    )
+
+    speak_texts_batch = [tokenizer.decode(speak_sequences_batch[i]) for i in range(B)]
+    return speak_sequences_batch, speak_texts_batch, out_states
+
+
 def train_forward(rwkv, batch_idx, batch_masks, states=None):
     # batch_idx [B,N] torch.LongTensor
     # batch_masks [B, N] torch.tensor
