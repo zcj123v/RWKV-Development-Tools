@@ -8,7 +8,7 @@ import types
 
 from .block import Block
 from RWKV.v6.state import BlockStateList
-from torch.cuda.amp import autocast
+from typing import Union
 
 
 class RWKV(nn.Module):
