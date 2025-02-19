@@ -8,7 +8,7 @@ import types
 
 from .block import Block
 from RWKV.v6.state import BlockStateList
-from torch.cuda.amp import autocast
+from typing import Union
 
 
 class RWKV(nn.Module):
@@ -66,7 +66,7 @@ class RWKV(nn.Module):
         torch.cuda.empty_cache()
 
     @torch.no_grad()
-    def forward(self, idx, states=None, overwrite_states=False, need_latent=False):
+    def infer(self, idx, states=None, overwrite_states=False):
         args = self.args
         # idx
         idx = torch.tensor([idx], dtype=torch.long).to(next(self.parameters()).device)
@@ -113,12 +113,8 @@ class RWKV(nn.Module):
             state = states[i]
             x, state = block(x, state)
             new_states[i] = state
-        if need_latent:
-            out_latent = x
         x = self.ln_out(x)
         logits = self.head(x)
-        if need_latent:
-            return logits, new_states, out_latent
 
         return logits, new_states
 
@@ -141,7 +137,12 @@ class RWKV(nn.Module):
         return tensor_batches, indices
 
     @torch.no_grad()
-    def batching(self, tokens_batches, states=None, latent_output=False):
+    def forward(
+        self,
+        tokens_batches: Union[torch.Tensor, list],
+        states: BlockStateList = None,
+        latent_output: bool = False,
+    ):
         args = self.args
         # tensor_batches, _ = self.tokens_list2tensor(tokens_batches)
         idx = torch.tensor(tokens_batches, dtype=torch.long).to(
@@ -190,11 +191,9 @@ class RWKV(nn.Module):
             latent = x
         x = self.ln_out(x)
         logits = self.head(x)
-        # init_mask = torch.zeros_like(logits)
-        # for i, length in enumerate(indices):
-        #     init_mask[i, :length] = 1
+
         if latent_output:
-            return logits, state, latent
+            return logits, new_states, latent
         return logits, new_states
 
     @torch.no_grad()
