@@ -335,21 +335,19 @@ def batch_generate(
                 speak_sequences[b].append(next_token)
 
                 if next_token in token_stop:
+                    target_state = states.batchof(b)
                     if m_postfix_token:
                         postfix = torch.tensor(
                             [[m_postfix_token]], dtype=torch.long
                         ).to(next(rwkv.parameters()).device)
-                        target_state = states.batchof(b)
-                        _, new_target_state = rwkv(postfix, target_state)
-                        print(target_state.shift_states.size())
-                        print(new_target_state.shift_states.size())
+                        _, target_state = rwkv(postfix, target_state)
                         out_states.shift_states[:, :, b, :] = copy.deepcopy(
-                            new_target_state.shift_states[:, :, 0, :]
+                            target_state.shift_states[:, :, 0, :]
                         )
                         out_states.wkv_states[:, b, :, :, :] = copy.deepcopy(
-                            new_target_state.wkv_states[:, 0, :, :, :]
+                            target_state.wkv_states[:, 0, :, :, :]
                         )
-                        end_sample_batch.append(b)
+                    end_sample_batch.append(b)
                     speak_sequences[b].pop()
 
         if len(end_sample_batch) == B:
