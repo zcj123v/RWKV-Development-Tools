@@ -18,14 +18,16 @@ def __nop(ob):
 
 MyModule = nn.Module
 MyFunction = __nop
-if os.environ["RWKV_JIT_ON"] == "1":
-    MyModule = torch.jit.ScriptModule
-    MyFunction = torch.jit.script_method
+# if os.environ["RWKV_JIT_ON"] == "1":
+#     MyModule = torch.jit.ScriptModule
+#     MyFunction = torch.jit.script_method
 
 CHUNK_LEN = 16
 
+full_parent_dir= os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 flags = ['-res-usage', f'-D_C_={HEAD_SIZE}', f"-D_CHUNK_LEN_={CHUNK_LEN}", "--use_fast_math", "-O3", "-Xptxas -O3", "--extra-device-vectorization"]
-load(name="wind_backstepping", sources=[f'cuda/wkv7_cuda.cu', 'cuda/wkv7_op.cpp'], is_python_module=False, verbose=True, extra_cuda_cflags=flags)
+load(name="wind_backstepping", sources=[f'{full_parent_dir}/cuda/wkv7_cuda.cu', f'{full_parent_dir}/cuda/wkv7_op.cpp'], is_python_module=False, verbose=True, extra_cuda_cflags=flags)
 
 class WindBackstepping(torch.autograd.Function):
     @staticmethod
@@ -274,7 +276,16 @@ class RWKV(nn.Module):
         args.size = args_in.model.size
         args.states = args_in.states
         args.weight_decay = args_in.trainer.weight_decay
-        self.args = args
+        self.args = self._process_args(args_in)
+
+        # 统一dtype处理
+        dtype_map = {
+            "fp32": torch.float,
+            "fp16": torch.half,
+            "bf16": torch.bfloat16
+        }
+        self.dtype = dtype_map.get(self.args.model.dtype, torch.bfloat16)
+        
         if self.args.model.dtype == "fp32":
             self.args.model.dtype = torch.float
         elif self.args.model.dtype == "fp16":
