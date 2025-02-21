@@ -341,12 +341,12 @@ def batch_generate(
                             [[m_postfix_token]], dtype=torch.long
                         ).to(next(rwkv.parameters()).device)
                         _, target_state = rwkv(postfix, target_state)
-                        out_states.shift_states[:, :, b, :] = copy.deepcopy(
-                            target_state.shift_states[:, :, 0, :]
-                        )
-                        out_states.wkv_states[:, b, :, :, :] = copy.deepcopy(
-                            target_state.wkv_states[:, 0, :, :, :]
-                        )
+                    out_states.shift_states[:, :, b, :] = copy.deepcopy(
+                        target_state.shift_states[:, :, 0, :]
+                    )
+                    out_states.wkv_states[:, b, :, :, :] = copy.deepcopy(
+                        target_state.wkv_states[:, 0, :, :, :]
+                    )
                     end_sample_batch.append(b)
                     speak_sequences[b].pop()
 
