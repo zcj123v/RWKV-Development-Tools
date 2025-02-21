@@ -27,7 +27,7 @@ CHUNK_LEN = 16
 full_parent_dir= os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 flags = ['-res-usage', f'-D_C_={HEAD_SIZE}', f"-D_CHUNK_LEN_={CHUNK_LEN}", "--use_fast_math", "-O3", "-Xptxas -O3", "--extra-device-vectorization"]
-load(name="wind_backstepping", sources=[f'{full_parent_dir}/cuda/wkv7_cuda.cu', f'{full_parent_dir}/cuda/wkv7_op.cpp'], is_python_module=False, verbose=True, extra_cuda_cflags=flags)
+load(name="wind_backstepping", sources=[f'{full_parent_dir}/v7/cuda/wkv7.cu', f'{full_parent_dir}/v7/cuda/wkv7_op.cpp'], is_python_module=False, verbose=True, extra_cuda_cflags=flags)
 
 class WindBackstepping(torch.autograd.Function):
     @staticmethod
