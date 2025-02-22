@@ -5,6 +5,7 @@ from utils.message_manager import cList
 from utils.webui.webui_utils import loss_curve_plot
 import time
 
+
 class TrainAgent:
     def __init__(self, train_server="http://0.0.0.0:3000"):
         self.train_server = train_server
@@ -150,6 +151,7 @@ class TrainAgent:
         max_ctx,
         lr_init,
         lr_final,
+        accumulate_grad,
         warmup_steps,
         n_save_ckpt,
         n_save_episode_ckpt,
@@ -177,6 +179,7 @@ class TrainAgent:
             "num_rollouts": num_rollouts,
             "tiny_batch_size": rollout_tiny_batch_size,
             "train_batch_size": train_batch_size,
+            "accumulate_grad": accumulate_grad,
         }
         loss_list = []
         rewards_list = []
@@ -200,9 +203,13 @@ class TrainAgent:
                     to_dir = result["to_dir"]
                     prefix = "训练完成，" if result["over"] else ""
                     output_text = f"{prefix}已保存至{to_dir}"
-                    yield output_text, loss_curve_plot(loss_list), loss_curve_plot(
-                        rewards_list
-                    ), loss_curve_plot(kl_list)
+                    yield output_text, loss_curve_plot(
+                        loss_list, caption="RL Loss"
+                    ), loss_curve_plot(
+                        rewards_list, caption="Rewards"
+                    ), loss_curve_plot(
+                        kl_list, caption="KL"
+                    )
                 else:
                     epoch = result["epoch"]
                     step = result["step"]
@@ -213,9 +220,13 @@ class TrainAgent:
                     rewards_list.append(sum_rewards / num_rollouts)
                     kl_list.append(kl)
                     output_text = f"正在训练，Epoch: {epoch}, Step: {step}, Loss: {loss}, KL: {kl}, Rewards: {sum_rewards}。"
-                    yield output_text, loss_curve_plot(loss_list), loss_curve_plot(
-                        rewards_list
-                    ), loss_curve_plot(kl_list)
+                    yield output_text, loss_curve_plot(
+                        loss_list, caption="RL Loss"
+                    ), loss_curve_plot(
+                        rewards_list, caption="Rewards"
+                    ), loss_curve_plot(
+                        kl_list, caption="KL"
+                    )
 
 
 def grpo_router(
@@ -228,4 +239,3 @@ def grpo_router(
         for a, b, c, d in train_agent.train_gsm8k(*args, **kwargs):
             yield a, b, c, d
             time.sleep(0.01)
-

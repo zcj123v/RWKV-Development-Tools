@@ -1200,6 +1200,9 @@ with gr.Blocks() as demo:
                         grpo_lr_warmup_input = gr.Number(
                             label="学习率预热步数", value=100, interactive=True
                         )
+                        grpo_accumulate_grad =gr.Checkbox(
+                            label="使用梯度累积", value=True, interactive=True
+                        )
                     with gr.Row():
                         grpo_temperature_input = gr.Number(
                             label="温度", value=1.0, interactive=True
@@ -1321,11 +1324,13 @@ with gr.Blocks() as demo:
                     grpo_lr_init_input,
                     grpo_lr_final_input,
                     grpo_lr_warmup_input,
+                    grpo_accumulate_grad,
                     grpo_n_save_ckpt_input,
                     grpo_n_save_episode_input,
                     grpo_num_rollouts_input,
                     grpo_tiny_batch_size_input,
                     grpo_train_batch_size_input,
+                    grpo_accumulate_grad,
                 ],
                 outputs=[
                     train_output_info,
@@ -1393,6 +1398,7 @@ with gr.Blocks() as demo:
             grpo_lr_init_input,
             grpo_lr_final_input,
             grpo_lr_warmup_input,
+            grpo_accumulate_grad,
             grpo_temperature_input,
             grpo_top_p_input,
             grpo_presence_penalty_input,
@@ -1456,6 +1462,7 @@ with gr.Blocks() as demo:
         grpo_lr_init_input,
         grpo_lr_final_input,
         grpo_lr_warmup_input,
+        grpo_accumulate_grad,
         grpo_temperature_input,
         grpo_top_p_input,
         grpo_presence_penalty_input,

@@ -5,7 +5,7 @@ import json
 import gradio as gr
 
 
-def loss_curve_plot(data):
+def loss_curve_plot(data, caption:str="Loss Curve"):
     plt.close()
     # 如果数据为空，返回一个空图
     if not data:
@@ -18,7 +18,7 @@ def loss_curve_plot(data):
     ax.plot(data, label="Loss Curve", color="#00FF7F", linewidth=2)  # 更亮的绿色
 
     # 添加标题和标签
-    ax.set_title("Loss Curve", color="white")
+    ax.set_title(caption, color="white")
     ax.set_xlabel("Steps", color="white")
     ax.set_ylabel("Loss", color="white")
 
@@ -81,7 +81,8 @@ def save_user_preference(save_path, *args):
         "grpo_resp_sp_token", "grpo_resp_prefix", "grpo_n_save_ckpt",
         "grpo_max_resp_ctx_len", "grpo_tiny_batch_size",
         "grpo_num_rollouts", "grpo_train_batch_size", "grpo_n_save_episode",
-        "grpo_lr_init", "grpo_lr_final", "grpo_lr_warmup", "grpo_temperature",
+        "grpo_lr_init", "grpo_lr_final", "grpo_lr_warmup",
+        "grpo_accumulate_grad", "grpo_temperature",
         "grpo_top_p", "grpo_presence_penalty", "grpo_frequency_penalty",
         "grpo_penalty_decay",
     ]
@@ -195,6 +196,7 @@ def load_user_preference(load_path, agent):
             preferences.get("grpo_lr_init", gr.update()),
             preferences.get("grpo_lr_final", gr.update()),
             preferences.get("grpo_lr_warmup", gr.update()),
+            preferences.get("grpo_accumulate_grad", gr.update()),
             preferences.get("grpo_temperature", gr.update()),
             preferences.get("grpo_top_p", gr.update()),
             preferences.get("grpo_presence_penalty", gr.update()),
@@ -203,6 +205,6 @@ def load_user_preference(load_path, agent):
             "已加载历史填写。",
         ]
     except FileNotFoundError:
-        return [gr.update()] * 59 + ["无历史操作记录"]
+        return [gr.update()] * 60 + ["无历史操作记录"]
     except Exception as e:
-        return [gr.update()] * 59 + [f"加载失败: {str(e)}"]
+        return [gr.update()] * 60 + [f"加载失败: {str(e)}"]

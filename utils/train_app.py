@@ -32,7 +32,7 @@ import random
 import wandb
 import sys
 import psutil
-import time
+
 from utils.collections import pad_2d_list_with_zeros, pad_and_batch
 from utils.dataset.dataset import MultimodalDataset, read_bin_wav
 from utils.dataset.dataset_functions import (
@@ -895,18 +895,21 @@ class OnlineTrainingAPP:
         clip_eps: float = 0.2,
         kl_weight: float = 0.01,
         grad_cp_max_norm: float = 1.0,
+        accumulate_grad: bool = True,
     ):
-        grpo_trainer = GRPOTrainer(self.model_engine, ref_model_server,tokenizer=self.train_tokenizer)
+        grpo_trainer = GRPOTrainer(
+            self.model_engine, ref_model_server, tokenizer=self.train_tokenizer
+        )
         grpo_loss = GRPOLoss(clip_eps=clip_eps, kl_weight=kl_weight)
         if lr_init:
             self.build_engine(lr_init, lr_final, warmup_steps)
         replay_buffer = ReplaySlidingWindow(n_replay_sliding_window)
-    
+
         dataloader = DataLoader(
             rl_dataset,
             batch_size=batch_size_per_gpu,
             shuffle=True,
-            collate_fn=rl_collate_fn
+            collate_fn=rl_collate_fn,
         )
         for epoch in range(n_epoch):
             for episode, (
@@ -948,57 +951,145 @@ class OnlineTrainingAPP:
                 for step in range(n_train_each_episode):
                     for exp in experience_sampler:
                         exp: ExperienceHist
-                        exp = exp.to(next(self.model_engine.parameters()).device)
+                        if accumulate_grad:
+                            is_fault = False
+                            loss = 0
+                            kl = 0
+                            self.model_engine.zero_grad()
+                            for rb in range(num_rollouts):
+                                (
+                                    history_tokens,
+                                    action_log_probs,
+                                    log_probs_ref,
+                                    rewards,
+                                    advantages,
+                                    action_mask,
+                                ) = (
+                                    exp.history_tokens[rb : rb + 1],
+                                    exp.action_log_probs[rb : rb + 1],
+                                    exp.log_probs_ref[rb : rb + 1],
+                                    exp.rewards[rb : rb + 1],
+                                    exp.advantages[rb : rb + 1],
+                                    exp.action_mask[rb : rb + 1],
+                                )
+                                _kl = exp.kl if exp.kl is not None else None
+                                train_hist = ExperienceHist(
+                                    history_tokens=history_tokens,
+                                    action_log_probs=action_log_probs,
+                                    log_probs_ref=log_probs_ref,
+                                    rewards=rewards,
+                                    advantages=advantages,
+                                    action_mask=action_mask,
+                                    kl=_kl,
+                                )
+                                train_hist = train_hist.to(
+                                    device=next(self.model_engine.parameters()).device
+                                )
+                                step_loss, step_kl = grpo_loss(
+                                    rwkv=self.model_engine,
+                                    experience_hist=train_hist,
+                                )
+                                loss += step_loss
+                                kl += step_kl
+                                if not step_loss.isfinite():
+                                    print(
+                                        f"WARNING: loss is infinite, skip this batch, loss={loss}"
+                                    )
+                                    is_fault = True
+                                    break
+                                self.model_engine.backward(
+                                    step_loss / num_rollouts,
+                                    retain_graph=(
+                                        True if rb < num_rollouts - 1 else False
+                                    ),
+                                )
+                                print(f"batch: {rb} loss: {step_loss}")
+                                train_hist = train_hist.to("cpu")
+                                del train_hist
+                                gc.collect()
+                                torch.cuda.empty_cache()
+                            if is_fault:
+                                del train_hist
+                                self.model_engine.zero_grad()
+                                gc.collect()
+                                torch.cuda.empty_cache()
+                                continue
+                            loss = loss / num_rollouts
+                            kl = kl / num_rollouts
+                            grad_norm = clip_grad_norm_(
+                                self.model_engine.parameters(),
+                                max_norm=grad_cp_max_norm,
+                            )
+                            self.model_engine.step()
 
-                        loss, kl = grpo_loss(self.model_engine, exp)
-                        if not loss.isfinite():
-                            print(f"Warning: Loss not finite, skipping backward, loss={loss}")
-                            continue
-                        
-                        self.model_engine.zero_grad()
-                        self.model_engine.backward(loss)
-                        grad_norm = clip_grad_norm_(self.model_engine.parameters(), max_norm=grad_cp_max_norm)
-                        
-                        print(f"rl step={step}: loss={loss}, advantage={exp.advantages}")
-                        print(f"rl step={step}: kl={kl: .4f}, grad_norm={grad_norm.item()}")
-                        self.model_engine.step()
-                        exp = exp.to("cpu")
+                        else:
+                            exp = exp.to(next(self.model_engine.parameters()).device)
+
+                            loss, kl = grpo_loss(self.model_engine, exp)
+                            if not loss.isfinite():
+                                print(
+                                    f"Warning: Loss not finite, skipping backward, loss={loss}"
+                                )
+                                continue
+
+                            self.model_engine.zero_grad()
+                            self.model_engine.backward(loss)
+                            grad_norm = clip_grad_norm_(
+                                self.model_engine.parameters(),
+                                max_norm=grad_cp_max_norm,
+                            )
+
+                            print(
+                                f"rl step={step}: loss={loss}, advantage={exp.advantages}"
+                            )
+                            print(
+                                f"rl step={step}: kl={kl: .4f}, grad_norm={grad_norm.item()}"
+                            )
+                            self.model_engine.step()
+                            exp = exp.to("cpu")
                         gc.collect()
                         torch.cuda.empty_cache()
-                        yield json.dumps(
-                            {
-                                "epoch": epoch,
-                                "step": step,
-                                "loss": loss.item(),
-                                "kl": kl.item(),
-                                "sum_rewards": episode_reward_sum.item(),
-                                "grad_norm": grad_norm.item(),
-                            },
-                            ensure_ascii=False,
-                        )+"\n"
-                        
-                        time.sleep(0.01)
-                        
+                        yield (
+                            json.dumps(
+                                {
+                                    "epoch": epoch,
+                                    "step": step,
+                                    "loss": loss.item(),
+                                    "kl": kl.item(),
+                                    "sum_rewards": episode_reward_sum.item(),
+                                    "grad_norm": grad_norm.item(),
+                                },
+                                ensure_ascii=False,
+                            )
+                            + "\n"
+                        )
+
                 if episode % n_save_episode_ckpt == 0 and self.rank == 0:
                     svpath = self.save_weight(
                         f"train_grpo_episode={episode}", save_train_state=True
                     )
-                    yield json.dumps(
+                    yield (
+                        json.dumps(
+                            {
+                                "over": False,
+                                "to_dir": svpath,
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+
+            if epoch % n_save_ckpt == 0 and self.rank == 0:
+                svpath = self.save_weight(
+                    f"train_grpo_epoch={epoch}", save_train_state=True
+                )
+                yield (
+                    json.dumps(
                         {
                             "over": False,
                             "to_dir": svpath,
                         },
                         ensure_ascii=False,
-                    )+"\n"
-                    
-            if epoch % n_save_ckpt == 0 and self.rank == 0:
-                svpath = self.save_weight(
-                    f"train_grpo_epoch={epoch}", save_train_state=True
+                    )
+                    + "\n"
                 )
-                yield json.dumps(
-                    {
-                        "over": False,
-                        "to_dir": svpath,
-                    },
-                    ensure_ascii=False,
-                )+"\n"

@@ -309,6 +309,7 @@
         "grad_cp_max_norm": 1.0,
         "n_replay_sliding_window": 0,
         "clear_replay_on_episode": true,
+        "accumulate_grad":true,
         "reward_model": {}
     }
 }
