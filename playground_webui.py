@@ -1330,7 +1330,6 @@ with gr.Blocks() as demo:
                     grpo_num_rollouts_input,
                     grpo_tiny_batch_size_input,
                     grpo_train_batch_size_input,
-                    grpo_accumulate_grad,
                 ],
                 outputs=[
                     train_output_info,
