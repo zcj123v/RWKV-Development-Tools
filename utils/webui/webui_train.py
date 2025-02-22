@@ -3,7 +3,8 @@ import json
 import os
 from utils.message_manager import cList
 from utils.webui.webui_utils import loss_curve_plot
-import asyncio
+import time
+
 
 class TrainAgent:
     def __init__(self, train_server="http://0.0.0.0:3000"):
@@ -135,26 +136,106 @@ class TrainAgent:
                     output_text = f"Epoch: {epoch}, Step: {step}, Loss: {mean_loss}"
                     yield progress_percent, output_text, loss_curve_plot(text_loss_list)
 
-    def train_dpo(self, variables):
-        # variables["stream"] = False
-        # variables["allow_multilabel"]=False
-        # requests.post(
-        #     self.train_server + "/train_dpo_from_folders", json=variables
-        # )
+    def train_gsm8k(
+        self,
+        parquet_file_path,
+        req_role,
+        req_prefix,
+        resp_role,
+        resp_prefix,
+        temperature,
+        top_p,
+        alpha_frequency,
+        alpha_presence,
+        alpha_decay,
+        max_ctx,
+        lr_init,
+        lr_final,
+        accumulate_grad,
+        warmup_steps,
+        n_save_ckpt,
+        n_save_episode_ckpt,
+        num_rollouts,
+        rollout_tiny_batch_size,
+        train_batch_size,
+    ):
+        variables = {
+            "parquet_file_path": parquet_file_path,
+            "req_role": req_role,
+            "req_prefix": req_prefix,
+            "resp_role": resp_role,
+            "resp_prefix": resp_prefix,
+            "temperature": temperature,
+            "top_p": top_p,
+            "alpha_frequency": alpha_frequency,
+            "alpha_presence": alpha_presence,
+            "alpha_decay": alpha_decay,
+            "max_ctx": max_ctx,
+            "lr_init": lr_init,
+            "lr_final": lr_final,
+            "warmup_steps": warmup_steps,
+            "n_save_ckpt": n_save_ckpt,
+            "n_save_episode_ckpt": n_save_episode_ckpt,
+            "num_rollouts": num_rollouts,
+            "tiny_batch_size": rollout_tiny_batch_size,
+            "train_batch_size": train_batch_size,
+            "accumulate_grad": accumulate_grad,
+        }
+        loss_list = []
+        rewards_list = []
+        kl_list = []
 
         with requests.post(
-            self.train_server + "/train_dpo_from_folders", json=variables, stream=True
+            self.train_server + "/train_gsm8k", json=variables, stream=True
         ) as response:
             if response.status_code != 200:
                 print(f"Error: Received status code {response.status_code}")
+                yield f"Error: Received status code {response.status_code}", loss_curve_plot(
+                    []
+                ), loss_curve_plot(
+                    []
+                ), loss_curve_plot(
+                    []
+                )
             for r in response.iter_lines():
                 result = json.loads(r)
                 if "over" in result:
-                    yield [result["to_dir"]]
+                    to_dir = result["to_dir"]
+                    prefix = "训练完成，" if result["over"] else ""
+                    output_text = f"{prefix}已保存至{to_dir}"
+                    yield output_text, loss_curve_plot(
+                        loss_list, caption="RL Loss"
+                    ), loss_curve_plot(
+                        rewards_list, caption="Rewards"
+                    ), loss_curve_plot(
+                        kl_list, caption="KL"
+                    )
                 else:
+                    epoch = result["epoch"]
                     step = result["step"]
-                    dpo_loss = result["dpo_loss"]
-                    chosen_rewards = result["chosen_rewards"]
-                    rejected_rewards = result["rejected_rewards"]
-                    print(step, dpo_loss, chosen_rewards, rejected_rewards)
-                    yield step, dpo_loss, chosen_rewards, rejected_rewards
+                    loss = result["loss"]
+                    kl = result["kl"]
+                    sum_rewards = result["sum_rewards"]
+                    loss_list.append(loss)
+                    rewards_list.append(sum_rewards / num_rollouts)
+                    kl_list.append(kl)
+                    output_text = f"正在训练，Epoch: {epoch}, Step: {step}, Loss: {loss}, KL: {kl}, Rewards: {sum_rewards}。"
+                    yield output_text, loss_curve_plot(
+                        loss_list, caption="RL Loss"
+                    ), loss_curve_plot(
+                        rewards_list, caption="Rewards"
+                    ), loss_curve_plot(
+                        kl_list, caption="KL"
+                    )
+
+
+def grpo_router(
+    train_agent: TrainAgent,
+    mode,
+    *args,
+    **kwargs,
+):
+    if mode == "gsm8k":
+        for a, b, c, d in train_agent.train_gsm8k(*args, **kwargs):
+            yield a, b, c, d
+            time.sleep(0.01)

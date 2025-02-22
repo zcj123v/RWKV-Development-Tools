@@ -25,6 +25,7 @@ from RWKV.functions import (
 from RWKV.multimodal_functions import (
     voice_encode_and_adapt,
 )
+from torch.utils.data import Dataset, DataLoader
 import deepspeed
 from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 import random
@@ -39,7 +40,15 @@ from utils.dataset.dataset_functions import (
     TraversalDataloader,
     MyDataloader,
     EpochSampleDataloader,
+    rl_collate_fn,
 )
+from utils.rl.grpo.train import GRPOTrainer
+from utils.rl.grpo.replay import ReplaySlidingWindow, ExperienceHist
+from utils.rl.grpo.functions import (
+    get_batch_log_probs,
+)
+from utils.rl.grpo.loss import GRPOLoss, kl_div
+from torch.nn.utils import clip_grad_norm_
 
 from config import vocoder
 
@@ -758,24 +767,28 @@ class OnlineTrainingAPP:
     def build_engine(self, lr_init, lr_final, warmup_steps):
         if hasattr(self, "model_engine"):
             print("调整引擎调度器参数...")
+            print(
+                f"lr_init={lr_init}, lr_final={lr_final}, warmup_steps={warmup_steps}"
+            )
             for param_group in self.model_engine.optimizer.param_groups:
                 param_group["lr"] = lr_init
             self.lr_scheduler.warmup_min_lr = lr_init  # 更新学习率调度器的初始学习率
             self.lr_scheduler.warmup_max_lr = lr_final  # 更新学习率调度器的最终学习率
-            self.lr_scheduler.warmup_num_steps = warmup_steps  # 更新学习率调度器的预热步数
-            if hasattr(self.lr_scheduler, 'last_epoch'):
+            self.lr_scheduler.warmup_num_steps = (
+                warmup_steps  # 更新学习率调度器的预热步数
+            )
+            if hasattr(self.lr_scheduler, "last_epoch"):
                 self.lr_scheduler.last_epoch = -1  # 重置调度器状态
-            if hasattr(self.lr_scheduler,"min_lrs"):
+            if hasattr(self.lr_scheduler, "min_lrs"):
                 for i in range(len(self.lr_scheduler.min_lrs)):
-                    self.lr_scheduler.min_lrs[i]=lr_init
-            if hasattr(self.lr_scheduler,"max_lrs"):
+                    self.lr_scheduler.min_lrs[i] = lr_init
+            if hasattr(self.lr_scheduler, "max_lrs"):
                 for i in range(len(self.lr_scheduler.max_lrs)):
-                    self.lr_scheduler.max_lrs[i]=lr_final
+                    self.lr_scheduler.max_lrs[i] = lr_final
             self.lr_scheduler.step()
-            print("=========================================")
             for attr, value in vars(self.lr_scheduler).items():
                 print(f"{attr}: {value}")
-            print(self.lr_scheduler.warmup_min_lr)
+            print("=========================================")
             return self.model_engine
         else:
             ds_config = {
@@ -820,7 +833,8 @@ class OnlineTrainingAPP:
                     amsgrad=False,
                     bias_correction=True,
                 )
-                if train_config.deepspeed.zero and train_config.deepspeed.offload_optimizer
+                if train_config.deepspeed.zero
+                and train_config.deepspeed.offload_optimizer
                 else FusedAdam(
                     self.model.get_optim_groups(),
                     lr=lr_init,
@@ -850,3 +864,232 @@ class OnlineTrainingAPP:
             )
             print("cuda available", torch.cuda.device_count())
         return self.model_engine
+
+    def train_grpo(
+        self,
+        rl_dataset: Dataset,
+        ref_model_server: str,
+        reward_func: callable,
+        rlhf_func: callable,
+        n_epoch: int = 1,
+        batch_size_per_gpu: int = 1,
+        temperature: float = 1,
+        top_p: float = 0.85,
+        alpha_frequency: float = 0.2,
+        alpha_presence: float = 0.2,
+        alpha_decay: float = 0.9961,
+        max_ctx: int = 1000,
+        token_stop: list = [65535],
+        token_ban: list = [0],
+        num_rollouts: int = 1,
+        tiny_batch_size: int = 1,
+        lr_init: float = None,
+        lr_final: float = None,
+        warmup_steps: int = None,
+        n_save_ckpt: int = 1,
+        n_save_episode_ckpt: int = 5,
+        n_replay_sliding_window: int = 0,
+        clear_replay_on_episode: bool = True,
+        n_train_each_episode: int = 1,
+        train_batch_size: int = 1,
+        clip_eps: float = 0.2,
+        kl_weight: float = 0.01,
+        grad_cp_max_norm: float = 1.0,
+        accumulate_grad: bool = True,
+    ):
+        grpo_trainer = GRPOTrainer(
+            self.model_engine, ref_model_server, tokenizer=self.train_tokenizer
+        )
+        grpo_loss = GRPOLoss(clip_eps=clip_eps, kl_weight=kl_weight)
+        if lr_init:
+            self.build_engine(lr_init, lr_final, warmup_steps)
+        replay_buffer = ReplaySlidingWindow(n_replay_sliding_window)
+
+        dataloader = DataLoader(
+            rl_dataset,
+            batch_size=batch_size_per_gpu,
+            shuffle=True,
+            collate_fn=rl_collate_fn,
+        )
+        for epoch in range(n_epoch):
+            for episode, (
+                input_conversations_batch,
+                resp_start_with_tokens_batch,
+                cleaned_answer_batch,
+                ground_truth_batch,
+                begin_with_state_batch,
+                kwargs_batch,
+            ) in enumerate(dataloader):
+                if clear_replay_on_episode:
+                    replay_buffer.clear()
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                episode_reward_sum, experience_sampler = grpo_trainer.act_episode(
+                    replay_buffer=replay_buffer,
+                    input_conversations_batch=input_conversations_batch,
+                    resp_start_with_tokens_batch=resp_start_with_tokens_batch,
+                    ground_truth_batch=ground_truth_batch,
+                    reward_func=reward_func,
+                    rlhf_func=rlhf_func,
+                    temperature=temperature,
+                    top_p=top_p,
+                    alpha_frequency=alpha_frequency,
+                    alpha_presence=alpha_presence,
+                    alpha_decay=alpha_decay,
+                    max_ctx=max_ctx,
+                    token_stop=token_stop,
+                    token_ban=token_ban,
+                    begin_with_state_batch=begin_with_state_batch,
+                    num_rollouts=num_rollouts,
+                    tiny_batch_size=tiny_batch_size,
+                    train_batch_size=train_batch_size,
+                    **kwargs_batch,
+                )
+                self.model_engine.train()
+
+                print(f"episode {episode}: sum reward->{episode_reward_sum}")
+                for step in range(n_train_each_episode):
+                    for exp in experience_sampler:
+                        exp: ExperienceHist
+                        if accumulate_grad:
+                            is_fault = False
+                            loss = 0
+                            kl = 0
+                            self.model_engine.zero_grad()
+                            for rb in range(num_rollouts):
+                                (
+                                    history_tokens,
+                                    action_log_probs,
+                                    log_probs_ref,
+                                    rewards,
+                                    advantages,
+                                    action_mask,
+                                ) = (
+                                    exp.history_tokens[rb : rb + 1],
+                                    exp.action_log_probs[rb : rb + 1],
+                                    exp.log_probs_ref[rb : rb + 1],
+                                    exp.rewards[rb : rb + 1],
+                                    exp.advantages[rb : rb + 1],
+                                    exp.action_mask[rb : rb + 1],
+                                )
+                                _kl = exp.kl if exp.kl is not None else None
+                                train_hist = ExperienceHist(
+                                    history_tokens=history_tokens,
+                                    action_log_probs=action_log_probs,
+                                    log_probs_ref=log_probs_ref,
+                                    rewards=rewards,
+                                    advantages=advantages,
+                                    action_mask=action_mask,
+                                    kl=_kl,
+                                )
+                                train_hist = train_hist.to(
+                                    device=next(self.model_engine.parameters()).device
+                                )
+                                step_loss, step_kl = grpo_loss(
+                                    rwkv=self.model_engine,
+                                    experience_hist=train_hist,
+                                )
+                                loss += step_loss
+                                kl += step_kl
+                                if not step_loss.isfinite():
+                                    print(
+                                        f"WARNING: loss is infinite, skip this batch, loss={loss}"
+                                    )
+                                    is_fault = True
+                                    break
+                                self.model_engine.backward(
+                                    step_loss / num_rollouts,
+                                    retain_graph=(
+                                        True if rb < num_rollouts - 1 else False
+                                    ),
+                                )
+                                print(f"batch: {rb} loss: {step_loss}")
+                                train_hist = train_hist.to("cpu")
+                                del train_hist
+                                gc.collect()
+                                torch.cuda.empty_cache()
+                            if is_fault:
+                                del train_hist
+                                self.model_engine.zero_grad()
+                                gc.collect()
+                                torch.cuda.empty_cache()
+                                continue
+                            loss = loss / num_rollouts
+                            kl = kl / num_rollouts
+                            grad_norm = clip_grad_norm_(
+                                self.model_engine.parameters(),
+                                max_norm=grad_cp_max_norm,
+                            )
+                            self.model_engine.step()
+
+                        else:
+                            exp = exp.to(next(self.model_engine.parameters()).device)
+
+                            loss, kl = grpo_loss(self.model_engine, exp)
+                            if not loss.isfinite():
+                                print(
+                                    f"Warning: Loss not finite, skipping backward, loss={loss}"
+                                )
+                                continue
+
+                            self.model_engine.zero_grad()
+                            self.model_engine.backward(loss)
+                            grad_norm = clip_grad_norm_(
+                                self.model_engine.parameters(),
+                                max_norm=grad_cp_max_norm,
+                            )
+
+                            print(
+                                f"rl step={step}: loss={loss}, advantage={exp.advantages}"
+                            )
+                            print(
+                                f"rl step={step}: kl={kl: .4f}, grad_norm={grad_norm.item()}"
+                            )
+                            self.model_engine.step()
+                            exp = exp.to("cpu")
+                        gc.collect()
+                        torch.cuda.empty_cache()
+                        yield (
+                            json.dumps(
+                                {
+                                    "epoch": epoch,
+                                    "step": step,
+                                    "loss": loss.item(),
+                                    "kl": kl.item(),
+                                    "sum_rewards": episode_reward_sum.item(),
+                                    "grad_norm": grad_norm.item(),
+                                },
+                                ensure_ascii=False,
+                            )
+                            + "\n"
+                        )
+
+                if episode % n_save_episode_ckpt == 0 and self.rank == 0:
+                    svpath = self.save_weight(
+                        f"train_grpo_episode={episode}", save_train_state=True
+                    )
+                    yield (
+                        json.dumps(
+                            {
+                                "over": False,
+                                "to_dir": svpath,
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+
+            if epoch % n_save_ckpt == 0 and self.rank == 0:
+                svpath = self.save_weight(
+                    f"train_grpo_epoch={epoch}", save_train_state=True
+                )
+                yield (
+                    json.dumps(
+                        {
+                            "over": False,
+                            "to_dir": svpath,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )

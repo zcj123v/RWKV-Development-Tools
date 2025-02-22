@@ -5,7 +5,7 @@ import json
 import gradio as gr
 
 
-def loss_curve_plot(data):
+def loss_curve_plot(data, caption:str="Loss Curve"):
     plt.close()
     # 如果数据为空，返回一个空图
     if not data:
@@ -18,7 +18,7 @@ def loss_curve_plot(data):
     ax.plot(data, label="Loss Curve", color="#00FF7F", linewidth=2)  # 更亮的绿色
 
     # 添加标题和标签
-    ax.set_title("Loss Curve", color="white")
+    ax.set_title(caption, color="white")
     ax.set_xlabel("Steps", color="white")
     ax.set_ylabel("Loss", color="white")
 
@@ -77,7 +77,14 @@ def save_user_preference(save_path, *args):
         "fllr_dataset_list", "fllr_train_epoch",
         "fllr_train_batch_size", "fllr_train_n_save_ckpt",
         "fllr_train_save_ckpt_step", "fllr_train_n_step_save_ckpt",
-        "rl_dataset_list", "rl_train_epoch", "rl_n_max_label"
+        "parquet_file_path", "grpo_req_sp_token", "grpo_req_prefix",
+        "grpo_resp_sp_token", "grpo_resp_prefix", "grpo_n_save_ckpt",
+        "grpo_max_resp_ctx_len", "grpo_tiny_batch_size",
+        "grpo_num_rollouts", "grpo_train_batch_size", "grpo_n_save_episode",
+        "grpo_lr_init", "grpo_lr_final", "grpo_lr_warmup",
+        "grpo_accumulate_grad", "grpo_temperature",
+        "grpo_top_p", "grpo_presence_penalty", "grpo_frequency_penalty",
+        "grpo_penalty_decay",
     ]
     
     # 更新偏好字典
@@ -130,6 +137,10 @@ def load_user_preference(load_path, agent):
             usr_sp_token,
             bot_sp_token,
         )
+        
+        
+
+        
         return [
             sender_name,
             replier_name,
@@ -171,12 +182,29 @@ def load_user_preference(load_path, agent):
             preferences.get("fllr_train_n_save_ckpt", gr.update()),
             preferences.get("fllr_train_save_ckpt_step", gr.update()),
             preferences.get("fllr_train_n_step_save_ckpt", gr.update()),
-            preferences.get("rl_dataset_list", gr.update()),
-            preferences.get("rl_train_epoch", gr.update()),
-            preferences.get("rl_n_max_label", gr.update()),
+            preferences.get("parquet_file_path", gr.update()),
+            preferences.get("grpo_req_sp_token", gr.update()),
+            preferences.get("grpo_req_prefix", gr.update()),
+            preferences.get("grpo_resp_sp_token", gr.update()),
+            preferences.get("grpo_resp_prefix", gr.update()),
+            preferences.get("grpo_n_save_ckpt", gr.update()),
+            preferences.get("grpo_max_resp_ctx_len", gr.update()),
+            preferences.get("grpo_tiny_batch_size", gr.update()),
+            preferences.get("grpo_num_rollouts", gr.update()),
+            preferences.get("grpo_train_batch_size", gr.update()),
+            preferences.get("grpo_n_save_episode", gr.update()),
+            preferences.get("grpo_lr_init", gr.update()),
+            preferences.get("grpo_lr_final", gr.update()),
+            preferences.get("grpo_lr_warmup", gr.update()),
+            preferences.get("grpo_accumulate_grad", gr.update()),
+            preferences.get("grpo_temperature", gr.update()),
+            preferences.get("grpo_top_p", gr.update()),
+            preferences.get("grpo_presence_penalty", gr.update()),
+            preferences.get("grpo_frequency_penalty", gr.update()),
+            preferences.get("grpo_penalty_decay", gr.update()),
             "已加载历史填写。",
         ]
     except FileNotFoundError:
-        return [gr.update()] * 43 + ["无历史操作记录"]
+        return [gr.update()] * 60 + ["无历史操作记录"]
     except Exception as e:
-        return [gr.update()] * 43 + [f"加载失败: {str(e)}"]
+        return [gr.update()] * 60 + [f"加载失败: {str(e)}"]
