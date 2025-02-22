@@ -122,6 +122,12 @@ def load_config(path, use_default=False) -> SimpleNamespace:
         config_data = json.loads(text)
         args = dict_to_namespace(config_data)
         return args
+    if use_default:
+        with open("./configs/default.json", "r", encoding="utf-8") as f:
+            text = f.read()
+        config_data = json.loads(text)
+        args = dict_to_namespace(config_data)
+        return args
     with open(path, "r", encoding="utf-8") as f:
         text = f.read()
     config_data = json.loads(text)
@@ -167,12 +173,8 @@ ego_types = [
     "rwkv_legacy_eos_resp"
 ]
 
-<<<<<<< HEAD
-global_config = load_config("./configs/config2_0.json")
-=======
 
 global_config = load_config("./configs/config2_0.json", use_default=True)
->>>>>>> 3c3a1ce87653cb6d3e5536906a17e981b329e73b
 global_config.role = role  # special token maps
 global_config.ego_types = ego_types  # 区分模型输出和其他输入的roles
 global_config.tokenizer_train = UNIQUE_TRIE_TOKENIZER(
@@ -203,6 +205,7 @@ try:
         )
     elif working_mode == "train_service":
         print("=======")
+        print("=======")
         os.environ["RWKV_HEAD_SIZE_A"] = str(
             global_config.train_service_config.model.head_size
         )
@@ -215,6 +218,7 @@ try:
         from RWKV.v6.state import BlockStateList
         from RWKV.v6.rwkv_state import vocoder
     elif global_config.rwkv_version == "v7":
+        from RWKV.v7.model import RWKV
         from RWKV.v7.model import RWKV
 except:
     working_mode = "infer_service"
