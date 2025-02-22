@@ -209,6 +209,7 @@ try:
         from RWKV.v6.rwkv_state import vocoder
     elif global_config.rwkv_version == "v7":
         from RWKV.v7.model import RWKV
+        from RWKV.v7.state import BlockStateList
 except:
     working_mode = "infer_service"
     os.environ["WORKING_MODE"] = "infer_service"

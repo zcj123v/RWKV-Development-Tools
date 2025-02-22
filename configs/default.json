@@ -28,7 +28,7 @@
     },
     "train_service_config": {
         "model": {
-            "load_model": "/home/neromous/MachineLr/datadisk/rwkv-checkpoints/basemodel/rwkv-x070-2b9-world-v3-53%trained-20250121-ctx4k.pth",
+            "load_model": "/home/neromous/MachineLr/datadisk/rwkv-checkpoints/basemodel/RWKV-x070-World-1.5B-v3-20250127-ctx4096.pth",
             "rwkv_version": "v7",
             "n_embd": -1,
             "n_layer": -1,
@@ -122,7 +122,7 @@
     },
     "infer_service_config": {
         "model": {
-            "load_model": "/home/neromous/MachineLr/datadisk/rwkv-checkpoints/basemodel/RWKV-x060-World-3B-v2.1-20240417-ctx4096.pth",
+            "load_model": "/home/neromous/MachineLr/datadisk/rwkv-checkpoints/basemodel/rwkv-x070-1b5-world-v3-80%trained-20250120-ctx4k.pth",
             "rwkv_version": "v6",
             "n_embd": -1,
             "n_layer": -1,

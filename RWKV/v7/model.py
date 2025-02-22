@@ -27,7 +27,7 @@ CHUNK_LEN = 16
 full_parent_dir= os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 flags = ['-res-usage', f'-D_C_={HEAD_SIZE}', f"-D_CHUNK_LEN_={CHUNK_LEN}", "--use_fast_math", "-O3", "-Xptxas -O3", "--extra-device-vectorization"]
-load(name="wind_backstepping", sources=[f'{full_parent_dir}/v7/cuda/wkv7.cu', f'{full_parent_dir}/v7/cuda/wkv7_op.cpp'], is_python_module=False, verbose=True, extra_cuda_cflags=flags)
+load(name="wind_backstepping", sources=[f'{full_parent_dir}/v7/cuda/wkv7_cuda.cu', f'{full_parent_dir}/v7/cuda/wkv7_op.cpp'], is_python_module=False, verbose=True, extra_cuda_cflags=flags)
 
 class WindBackstepping(torch.autograd.Function):
     @staticmethod
@@ -115,9 +115,11 @@ class RWKV_Tmix_x070(MyModule):
 
             # D_MV_LORA = 32
             D_MV_LORA = max(32, int(round(  (1.3*(C**0.5))  /32)*32)) # suggestion
-            self.v1 = nn.Parameter(torch.zeros(C, D_MV_LORA))
-            self.v2 = nn.Parameter(ortho_init(torch.zeros(D_MV_LORA, C), 0.1))
-            self.v0 = nn.Parameter(torch.zeros(1,1,C)+1.0)
+            if self.layer_id!=0:
+                self.v1 = nn.Parameter(torch.zeros(C, D_MV_LORA))
+                self.v2 = nn.Parameter(ortho_init(torch.zeros(D_MV_LORA, C), 0.1))
+                self.v0 = nn.Parameter(torch.zeros(1,1,C)+1.0)
+
 
             # Note: for some data, you can reduce D_GATE_LORA or even remove this gate
             # D_GATE_LORA = 128
@@ -221,9 +223,10 @@ class Block(nn.Module):
         if self.layer_id == 0:
             self.ln0 = nn.LayerNorm(args.n_embd)
 
+
         self.att = RWKV_Tmix_x070(args, layer_id)
         self.ffn = RWKV_CMix_x070(args, layer_id)
-        
+
         if args.dropout > 0:
             self.drop0 = nn.Dropout(p = args.dropout)
             self.drop1 = nn.Dropout(p = args.dropout)
@@ -263,20 +266,18 @@ class RWKV(nn.Module):
         args.n_embd = args_in.model.n_embd
         args.n_layer = args_in.model.n_layer
         args.vocab_size = args_in.model.vocab_size
-        args.dropout = args_in.trainer.dropout
-        args.grad_cp = args_in.deepspeed["gradient_clipping"]
+        args.dropout = args_in.train.dropout
+        args.grad_cp = 1
         args.lora_on = args_in.lora.lora_on
         args.ctx_len = args_in.model.ctx_len
         args.head_size = args_in.model.head_size
         args.head_size_divisor = args_in.model.head_size_divisor
         args.load_model = args_in.model.load_model
         args.lora = args_in.lora
-        args.trainer = args_in.trainer
+        args.trainer = args_in.train
         args.model = args_in.model
-        args.size = args_in.model.size
-        args.states = args_in.states
-        args.weight_decay = args_in.trainer.weight_decay
-        self.args = self._process_args(args_in)
+        args.weight_decay = args_in.train.weight_decay
+        self.args = args
 
         # 统一dtype处理
         dtype_map = {
@@ -284,7 +285,7 @@ class RWKV(nn.Module):
             "fp16": torch.half,
             "bf16": torch.bfloat16
         }
-        self.dtype = dtype_map.get(self.args.model.dtype, torch.bfloat16)
+        self.dtype = dtype_map.get(args_in.model.dtype, torch.bfloat16)
         
         if self.args.model.dtype == "fp32":
             self.args.model.dtype = torch.float
@@ -292,7 +293,6 @@ class RWKV(nn.Module):
             self.args.model.dtype = torch.half
         elif self.args.model.dtype == "bf16":
             self.args.model.dtype = torch.bfloat16
-
 
         # load weight
         model_weights = torch.load(args.load_model, map_location='cpu')
@@ -320,9 +320,7 @@ class RWKV(nn.Module):
         args.dim_ffn = int((args.n_embd * 3.5) // 32 * 32)
 
 
-        self.history_decay = nn.Parameter(torch.tensor(0.1))
         self.emb = nn.Embedding(args.vocab_size, args.n_embd)
-
         self.blocks = nn.ModuleList([Block(args, i) for i in range(args.n_layer)])
         self.ln_out = nn.LayerNorm(args.n_embd)
         self.head = nn.Linear(args.n_embd, args.vocab_size, bias=False)
@@ -331,18 +329,8 @@ class RWKV(nn.Module):
         if args.dropout > 0:
             self.drop0 = nn.Dropout(p=args.dropout)
 
-        if args.lora.lora_on or args.lora.lora_load:
-            print("======load lora weight=======")
-            model_weights = self.load_lora(model_weights)
-
-        # model_weights = {k: v.to(dtype=torch.bfloat16) for k, v
-        #                  in model_weights.items()}
-        
-        if args.lora.lora_on or args.states.state_tuning_on or args.lora.lora_load or args.states.load_state:
-            self.load_state_dict(model_weights, strict=False)
-        else:
-            model_weights = {k:v for k,v in model_weights.items() if "time_state" not in k}
-            self.load_state_dict(model_weights)
+        model_weights = {k:v for k,v in model_weights.items()}
+        self.load_state_dict(model_weights)
 
         for p in self.parameters():
             p.data = p.data.to(dtype=self.args.model.dtype)
@@ -438,7 +426,7 @@ class RWKV(nn.Module):
         args = self.args
 
         # idx
-        x = torch.tensor([idx], dtype=torch.long).cuda()
+        x = idx
 
         # 计算logits
         args = self.args
