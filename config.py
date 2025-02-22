@@ -204,8 +204,6 @@ try:
             global_config.pretrain_script_config.model.ctx_len
         )
     elif working_mode == "train_service":
-        print("=======")
-        print("=======")
         os.environ["RWKV_HEAD_SIZE_A"] = str(
             global_config.train_service_config.model.head_size
         )
