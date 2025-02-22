@@ -208,6 +208,7 @@ try:
         from RWKV.v6.infer_model.model_service import RWKV as RWKVInfer
         from RWKV.v6.rwkv_state.model import RWKV
         from RWKV.v6.rwkv_state import vocoder
+
     elif global_config.rwkv_version == "v7":
         from RWKV.v7.model import RWKV
 except:
@@ -216,4 +217,5 @@ except:
     print(
         "WORKING_MODE not set in environment variables, using infer_service as default."
     )
+
 from RWKV.v6.state import BlockStateList

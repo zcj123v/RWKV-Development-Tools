@@ -9,7 +9,8 @@ if importlib.util.find_spec('deepspeed'):
     from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 from torch.utils.cpp_extension import load
 import types
-
+from RWKV.v6.state import BlockStateList
+from typing import Union, Optional, List
 
 HEAD_SIZE = int(os.environ["RWKV_HEAD_SIZE_A"])
 
@@ -22,7 +23,7 @@ MyFunction = __nop
 #     MyModule = torch.jit.ScriptModule
 #     MyFunction = torch.jit.script_method
 
-CHUNK_LEN = 16
+CHUNK_LEN = 24
 
 full_parent_dir= os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -422,11 +423,11 @@ class RWKV(nn.Module):
         return optimizer, lr_scheduler
 
 
-    def forward(self, idx, v_first=None):
+    def forward(self, idx: Union[torch.Tensor, list], states: BlockStateList = None,v_first=None):
         args = self.args
 
         # idx
-        x = idx
+        x = torch.tensor(idx, device=next(self.parameters()).device, dtype=torch.long)
 
         # 计算logits
         args = self.args

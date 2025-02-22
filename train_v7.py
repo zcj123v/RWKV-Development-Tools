@@ -19,11 +19,12 @@ os.environ["RWKV_HEAD_SIZE_A"] = str(
 
 from RWKV.v7.model import RWKV
 
-# 创建一个简单的测试数据集
+# 修改 SimpleDataset 类
 class SimpleDataset(Dataset):
     def __init__(self, size=1000, seq_length=512):
         self.size = size
-        self.seq_length = seq_length
+        # 确保 seq_length 是 CHUNK_LEN (24) 的整数倍
+        self.seq_length = (seq_length // 24) * 24 + 1  # 向下取整到最近的24的倍数
         
     def __len__(self):
         return self.size
@@ -36,21 +37,35 @@ class SimpleDataset(Dataset):
 
 # DeepSpeed配置
 ds_config = {
-    "train_batch_size": 2,
-    "zero_optimization": {
+      "bfloat16": {
+          "enabled": "auto"
+      },
+      "zero_optimization": {
         "stage": 2,
         "offload_optimizer": {
-            "device": "cpu"
-        }
+            "device": "cpu",
+            "pin_memory": True
+        },
+        "overlap_comm": True,
+        "allgather_partitions": True,
+        "allgather_bucket_size": 2e3,
+        "reduce_scatter": True,
+        "reduce_bucket_size": 2e3,
+        "contiguous_gradients": True
+      },
+      "gradient_accumulation_steps": 1,
+      "gradient_clipping": 1,
+      "train_micro_batch_size_per_gpu": 2
     }
-}
 
-# 初始化模型
+# 初始化模型和数据加载器时使用调整后的序列长度
 model = RWKV(train_config)
 optimizer, lr_scheduler = model.get_optim_groups()
-# 准备数据
-dataset = SimpleDataset()
-dataloader = DataLoader(dataset, batch_size=8, shuffle=True)
+
+# 使用能被24整除的序列长度
+seq_length = (train_config.model.ctx_len // 24) * 24 
+dataset = SimpleDataset(seq_length=seq_length)
+dataloader = DataLoader(dataset, batch_size=2, shuffle=True)
 
 # 初始化DeepSpeed
 model_engine, optimizer, _, _ = deepspeed.initialize(
@@ -70,8 +85,9 @@ def train():
             targets = batch['labels'].cuda()
             
             # Create masks (all ones since we're using random data)
-            batch_masks = torch.ones_like(inputs, dtype=torch.float32)
-            
+            batch_masks = torch.ones_like(inputs, dtype=torch.float32).cuda()
+            print("===input shape===", inputs.shape, batch_masks.shape)
+            batch_masks = batch_masks
             # Use train_forward instead of manual loss calculation
             loss, _ = train_forward(model_engine, inputs, batch_masks)
             

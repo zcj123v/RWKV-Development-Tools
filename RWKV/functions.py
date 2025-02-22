@@ -4,7 +4,9 @@ import numpy as np
 import copy
 import sys
 import requests
+from config import global_config
 from config import BlockStateList
+
 from typing import List
 
 torch.autograd.set_detect_anomaly(True)
@@ -479,12 +481,13 @@ def train_forward(rwkv, batch_idx, batch_masks, states=None):
 
     # process mask
     mask = batch_masks.to(device=next(rwkv.parameters()).device, dtype=torch.float32)
-    mask = mask.view(-1)
+    print("===logits===", inputs.shape, targets.shape, mask.shape)
+    mask = mask.reshape(-1)
     sum_mask = torch.sum(mask).item()
     logits, new_states = rwkv(inputs, states)
 
     if sum_mask == mask.shape[0]:
-        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.reshape(-1))
         # print('rank', rwkv.global_rank, 'loss', loss.item())
     else:
         loss = F.cross_entropy(
