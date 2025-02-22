@@ -146,7 +146,9 @@ role = {
     "dirty": {"prefix": [65530, 65532], "postfix": []},
     "postfix": {"prefix": [], "postfix": [65535, 11]},
     "text": {"prefix": [], "postfix": []},
+    "text_req": {"prefix": [], "postfix": []},
     "rwkv_legacy_eos": {"prefix": [], "postfix": [261]},
+    "rwkv_legacy_eos_resp": {"prefix": [], "postfix": [261]},
 }
 ego_types = [
     "text",
@@ -156,8 +158,8 @@ ego_types = [
     "response_voice",
     "system_no_mask",
     "conversation_no_mask",
+    "rwkv_legacy_eos_resp"
 ]
-
 
 global_config = load_config("./configs/config2_0.json")
 global_config.role = role  # special token maps

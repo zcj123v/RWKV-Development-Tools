@@ -53,3 +53,4 @@ userpath==1.9.1
 wandb==0.18.7
 wcwidth==0.2.13
 torchsde
+asteval==1.0.6

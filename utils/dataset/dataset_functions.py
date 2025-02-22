@@ -2,8 +2,7 @@ import torch
 from .dataset import MultimodalDataset
 from concurrent.futures import ThreadPoolExecutor
 import random
-from typing import List
-
+from typing import List, Tuple, Any
 
 class MyDataloader:
     def __init__(
@@ -322,3 +321,40 @@ class EpochSampleDataloader:
     def __del__(self):
         for dataloader in self.dataloader_list:
             del dataloader
+
+
+def rl_collate_fn(batch: List[Tuple[Any, ...]]) -> Tuple[List[Any], ...]:
+    """
+    Custom collate function to batch the data returned by GSM8KRLDataset.
+
+    Args:
+        batch (List[Tuple[Any, ...]]): A list of tuples, where each tuple contains the data returned by __getitem__.
+
+    Returns:
+        Tuple[List[Any], ...]: A tuple of 6 lists, each containing batched data for one of the variables.
+    """
+    # Unpack the batch into separate lists
+    input_conversations_batch = [item[0] for item in batch]
+    resp_start_with_tokens_batch = [item[1] for item in batch]
+    cleaned_answer_batch = [item[2] for item in batch]
+    ground_truth_batch = [item[3] for item in batch]
+    begin_with_state_batch = [item[4] for item in batch]
+    kwargs_batch = {}
+    for b in batch:
+        for k, v in b[5].items():
+            if f"{k}_batch" not in kwargs_batch:
+                kwargs_batch[f"{k}_batch"] = []
+            kwargs_batch[f"{k}_batch"].append(v)
+            print(k, v)
+    
+    # [item[5] for item in batch]
+
+    return (
+        input_conversations_batch,
+        resp_start_with_tokens_batch,
+        ground_truth_batch,
+        cleaned_answer_batch,
+        begin_with_state_batch,
+        kwargs_batch,
+    )
+    

@@ -294,7 +294,21 @@
         },
         "api_hist_dir":"./api_hists"
     },
-    "grpo":{
-
+    "grpo": {
+        "n_rollout": 32,
+        "rollout_tiny_batch": 1,
+        "train_batch_size": 1,
+        "n_train_each_episode": 1,
+        "rollout_max_len": 1024,
+        "group_size": 12,
+        "lr_init": 5e-6,
+        "warmup_steps": 1,
+        "lr_final": 5e-6,
+        "kl_weight": 0.01,
+        "clip_eps": 0.2,
+        "grad_cp_max_norm": 1.0,
+        "n_replay_sliding_window": 0,
+        "clear_replay_on_episode": true,
+        "reward_model": {}
     }
 }
