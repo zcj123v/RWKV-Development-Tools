@@ -8,6 +8,7 @@ monkey.patch_all()
 from config import global_config
 
 train_config = global_config.train_service_config
+grpo_config = global_config.grpo
 
 
 from bottle import route, run, request, response
@@ -19,6 +20,7 @@ import aiohttp
 from concurrent.futures import ThreadPoolExecutor
 from utils.train_app import OnlineTrainingAPP
 import json
+from utils.dataset.gsm8k_dataset import GSM8KRLDataset
 
 app = OnlineTrainingAPP()
 rank = dist.get_rank()
@@ -174,7 +176,7 @@ def train_text_from_messages():
     use_ego_mask = req.get("use_ego_mask", False)
     ignore_ctx = req.get("ignore_ctx", False)
     save_name_last = req.get("save_name_last", "last")
-    
+
     lr_init = req.get("lr_init", None)
     lr_final = req.get("lr_final", None)
     warmup_steps = req.get("warmup_steps", None)
@@ -197,6 +199,94 @@ def train_text_from_messages():
     )
     app.save_weight(save_name_last, True)
 
+
+@route("/train_gsm8k", method="POST")
+def train_gsm8k():
+    if rank == 0 and total_ranks > 1:
+        asyncio.run(distribute_package(req, "train_gsm8k"))
+    req = dict(request.json)
+    parquet_file_path = req.get("parquet_file_path")
+    ref_model_server = req.get(
+        "ref_model_server",
+        f"http://{global_config.server_config.infer.host}:{global_config.server_config.infer.port}",
+    )
+    req_role = req.get("req_role", "conversation")
+    req_prefix = req.get("req_prefix", "Q: ")
+    resp_role = req.get("resp_role", "response")
+    resp_prefix = req.get("resp_prefix", "A: ")
+    temperature = req.get("temperature", 1)
+    top_p = req.get("top_p", 0.85)
+    tokenizer = global_config.tokenizer_train
+
+    rl_dataset = GSM8KRLDataset(
+        parquet_file_path=parquet_file_path,
+        req_role=req_role,
+        req_prefix=req_prefix,
+        resp_role=resp_role,
+        resp_prefix=resp_prefix,
+        tokenizer=tokenizer,
+    )
+    n_epoch = req.get("n_epoch", 1)
+    batch_size_per_gpu = req.get("batch_size_per_gpu", 1)
+    temperature = req.get("temperature", 1)
+    top_p = req.get("top_p", 0.85)
+    alpha_frequency = req.get("alpha_frequency", 0.2)
+    alpha_presence = req.get("alpha_presence", 0.2)
+    alpha_decay = req.get("alpha_decay", 0.9961)
+    max_ctx = req.get("max_ctx", grpo_config.rollout_max_len)
+    token_stop = global_config.role[resp_role]["postfix"][0:1]
+    token_ban = [0]
+    lr_init = req.get("lr_init", grpo_config.lr_init)
+    lr_final = req.get("lr_final", grpo_config.lr_final)
+    warmup_steps = req.get("warmup_steps", grpo_config.warmup_steps)
+    n_save_ckpt = req.get("n_save_ckpt", 1)
+    n_save_episode_ckpt = req.get("n_save_episode_ckpt", 5)
+    num_rollouts = req.get("num_rollouts", grpo_config.n_rollout)
+    tiny_batch_size = req.get("tiny_batch_size", grpo_config.rollout_tiny_batch)
+    train_batch_size = req.get("train_batch_size", grpo_config.train_batch_size)
+    n_replay_sliding_window = req.get(
+        "n_replay_sliding_window", grpo_config.n_replay_sliding_window
+    )
+    clear_replay_on_episode = req.get(
+        "clear_replay_on_episode", grpo_config.clear_replay_on_episode
+    )
+    n_train_each_episode = req.get(
+        "n_train_each_episode", grpo_config.n_train_each_episode
+    )
+    clip_eps = req.get("clip_eps", grpo_config.clip_eps)
+    kl_weight = req.get("kl_weight", grpo_config.kl_weight)
+    grad_cp_max_norm = req.get("grad_cp_max_norm", grpo_config.grad_cp_max_norm)
+    response.content_type = "application/json"
+    return app.train_grpo(
+        rl_dataset=rl_dataset,
+        ref_model_server=ref_model_server,
+        reward_func=rl_dataset.reward_func,
+        rlhf_func=lambda *args: args,
+        n_epoch=n_epoch,
+        batch_size_per_gpu=batch_size_per_gpu,
+        temperature=temperature,
+        top_p=top_p,
+        alpha_frequency=alpha_frequency,
+        alpha_presence=alpha_presence,
+        alpha_decay=alpha_decay,
+        max_ctx=max_ctx,
+        token_stop=token_stop,
+        token_ban=token_ban,
+        num_rollouts=num_rollouts,
+        tiny_batch_size=tiny_batch_size,
+        lr_init=lr_init,
+        lr_final=lr_final,
+        warmup_steps=warmup_steps,
+        n_save_ckpt=n_save_ckpt,
+        n_save_episode_ckpt=n_save_episode_ckpt,
+        n_replay_sliding_window=n_replay_sliding_window,
+        clear_replay_on_episode=clear_replay_on_episode,
+        n_train_each_episode=n_train_each_episode,
+        train_batch_size=train_batch_size,
+        clip_eps=clip_eps,
+        kl_weight=kl_weight,
+        grad_cp_max_norm=grad_cp_max_norm,
+    )
 
 
 async def distribute_package(received_package, route):
