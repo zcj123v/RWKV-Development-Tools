@@ -481,7 +481,7 @@ def train_forward(rwkv, batch_idx, batch_masks, states=None):
 
     # process mask
     mask = batch_masks.to(device=next(rwkv.parameters()).device, dtype=torch.float32)
-    print("===logits===", inputs.shape, targets.shape, mask.shape)
+
     mask = mask.reshape(-1)
     sum_mask = torch.sum(mask).item()
     logits, new_states = rwkv(inputs, states)

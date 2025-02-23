@@ -33,7 +33,7 @@
             "n_embd": -1,
             "n_layer": -1,
             "vocab_size": -1,
-            "ctx_len": 3072,
+            "ctx_len": 128,
             "dtype": "bf16",
             "head_size": 64,
             "head_size_a": 64,
@@ -93,6 +93,7 @@
             "path": "/home/neromous/Documents/RWKV-Ourboros/resources/output/lora/default.pth"
         },
         "train": {
+            "state_on": true,
             "infctx_on": true,
             "grad_cp": 1,
             "dropout": 0,

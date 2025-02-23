@@ -2,9 +2,6 @@ import os
 
 os.environ["WORKING_MODE"] = "train_service"
 
-from gevent import monkey
-
-monkey.patch_all()
 from config import global_config
 
 import deepspeed
@@ -24,7 +21,7 @@ class SimpleDataset(Dataset):
     def __init__(self, size=1000, seq_length=512):
         self.size = size
         # 确保 seq_length 是 CHUNK_LEN (24) 的整数倍
-        self.seq_length = (seq_length // 24) * 24 + 1  # 向下取整到最近的24的倍数
+        self.seq_length = (seq_length // 24) * 24   # 向下取整到最近的24的倍数
         
     def __len__(self):
         return self.size
@@ -60,6 +57,7 @@ ds_config = {
 
 # 初始化模型和数据加载器时使用调整后的序列长度
 model = RWKV(train_config)
+
 optimizer, lr_scheduler = model.get_optim_groups()
 
 # 使用能被24整除的序列长度
@@ -88,8 +86,7 @@ def train():
             batch_masks = torch.ones_like(inputs, dtype=torch.float32).cuda()
             print("===input shape===", inputs.shape, batch_masks.shape)
             batch_masks = batch_masks
-            # Use train_forward instead of manual loss calculation
-            loss, _ = train_forward(model_engine, inputs, batch_masks)
+            loss = model_engine(inputs, targets, batch_masks)
             
             model_engine.backward(loss)
             model_engine.step()
