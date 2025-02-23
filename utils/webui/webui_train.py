@@ -167,19 +167,19 @@ class TrainAgent:
             "resp_prefix": resp_prefix,
             "temperature": temperature,
             "top_p": top_p,
-            "alpha_frequency": alpha_frequency,
             "alpha_presence": alpha_presence,
+            "alpha_frequency": alpha_frequency,
             "alpha_decay": alpha_decay,
             "max_ctx": max_ctx,
             "lr_init": lr_init,
             "lr_final": lr_final,
             "warmup_steps": warmup_steps,
+            "accumulate_grad": accumulate_grad,
             "n_save_ckpt": n_save_ckpt,
             "n_save_episode_ckpt": n_save_episode_ckpt,
             "num_rollouts": num_rollouts,
             "tiny_batch_size": rollout_tiny_batch_size,
             "train_batch_size": train_batch_size,
-            "accumulate_grad": accumulate_grad,
         }
         loss_list = []
         rewards_list = []
