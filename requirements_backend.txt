@@ -4,7 +4,7 @@ bottle==0.13.2
 certifi==2024.8.30
 charset-normalizer==3.4.0
 click==8.1.7
-deepspeed==0.15.4
+deepspeed
 docker-pycreds==0.4.0
 einops==0.8.0
 encodec==0.1.1
@@ -50,4 +50,7 @@ userpath==1.9.1
 wandb==0.18.7
 wcwidth==0.2.13
 torchsde
+torch
+torchvision
+torchaudio
 asteval==1.0.6
