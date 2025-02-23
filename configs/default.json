@@ -33,12 +33,12 @@
             "n_embd": -1,
             "n_layer": -1,
             "vocab_size": -1,
-            "ctx_len": 128,
+            "ctx_len": 3200,
             "dtype": "bf16",
             "head_size": 64,
             "head_size_a": 64,
             "head_size_divisor": 8,
-            "chunk_len": 24
+            "chunk_len": 256
         },
         "deepspeed": {
             "zero": true,

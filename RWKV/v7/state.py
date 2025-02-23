@@ -22,6 +22,7 @@ class BlockStateList:
     def __init__(self, shift_states, wkv_states):
         self.wkv_states = wkv_states
         self.shift_states = shift_states
+        self.v_first = None
 
     @staticmethod
     def create(N, B, C, H, device, dtype):
@@ -49,3 +50,34 @@ class BlockStateList:
         self.wkv_states[layer] = state.time_mix_state.wkv_state
         self.shift_states[layer, 1] = state.channel_mix_state.shift_state
 
+    def to_cuda(self):
+        self.wkv_states = self.wkv_states.cuda()
+        self.shift_states = self.shift_states.cuda()
+        return self
+
+    def to_cpu(self):
+        self.wkv_states = self.wkv_states.detach().cpu()
+        self.shift_states = self.shift_states.detach().cpu()
+        return self
+
+    def save_state_to_path(self, path: str):
+        """Save state tensors to file using torch.save"""
+        torch.save({
+            "wkv": self.wkv_states,
+            "shift": self.shift_states
+        }, path)
+
+    def load_state_from_path(self, path: str):
+        """Load state tensors from file using torch.load"""
+        checkpoint = torch.load(path, map_location='cpu')
+        self.wkv_states = checkpoint['wkv'].to(self.wkv_states.device)
+        self.shift_states = checkpoint['shift'].to(self.shift_states.device)
+        return self
+
+    def set_vfirst(self, value: torch.Tensor):
+        """Set the v_first tensor used in attention computation"""
+        self.v_first = value
+
+    def get_vfirst(self) -> torch.Tensor:
+        """Get the v_first tensor. Returns None if not set"""
+        return self.v_first

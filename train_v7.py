@@ -86,7 +86,7 @@ def train():
             batch_masks = torch.ones_like(inputs, dtype=torch.float32).cuda()
             print("===input shape===", inputs.shape, batch_masks.shape)
             batch_masks = batch_masks
-            loss = model_engine(inputs, targets, batch_masks)
+            loss, _ = model_engine.train_step(inputs, targets, None)
             
             model_engine.backward(loss)
             model_engine.step()
