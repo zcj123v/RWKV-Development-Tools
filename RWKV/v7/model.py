@@ -188,13 +188,13 @@ class RWKV_CMix_x070(MyModule):
 
     def forward(self, x,last_state: ChannelMixState):
         #xx = self.time_shift(x) - x
-        xx = torch.concat((last_state.shift_state.unsqueeze(1), x[:, :0]), dim=1) - x
+        xx = torch.concat((last_state.shift_state.unsqueeze(1), x[:, :-1]), dim=1) - x
         
         
         k = x + xx * self.x_k
         k = torch.relu(self.key(k)) ** 2
 
-        return self.value(k), ChannelMixState(x[:, -1])
+        return self.value(k), ChannelMixState(x[:, 0])
     
 
 class Block(nn.Module):
