@@ -266,7 +266,7 @@ class TimeMix(nn.Module):
         )
 
     def forward(self, x, last_state):
-        shift_state_out = x[:, -1]
+        shift_state_out = x[:, 0]
 
         B, T, C = x.size()
         H = self.n_head
