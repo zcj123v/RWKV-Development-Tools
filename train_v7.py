@@ -3,33 +3,47 @@ import os
 os.environ["WORKING_MODE"] = "train_service"
 
 from config import global_config
-
 import deepspeed
 import torch
 from torch.utils.data import Dataset, DataLoader
 from RWKV.functions import train_forward
-
 train_config = global_config.train_service_config
-os.environ["RWKV_HEAD_SIZE_A"] = str(
-            global_config.pretrain_script_config.model.head_size
-        )
+os.environ["RWKV_HEAD_SIZE_A"] = str(global_config.pretrain_script_config.model.head_size)
+from RWKV.v7.model_raw import RWKV
+import gc
+ 
+tokenizer = global_config.tokenizer_eval
 
-from RWKV.v7.model import RWKV
+with open("/home/neromous/MachineLr/RWKV-Development-Tools/resources/docs/RWKV7结构解析.md", "r") as f:
+    eval_text = f.read()
+
+eval_tokens = tokenizer.encode(eval_text)
+# 确保eval_tokens长度是24的倍数
+eval_tokens_len = (len(eval_tokens) // 24) * 24 +1
+eval_tokens = eval_tokens[:eval_tokens_len]
 
 # 修改 SimpleDataset 类
 class SimpleDataset(Dataset):
     def __init__(self, size=1000, seq_length=512):
         self.size = size
         # 确保 seq_length 是 CHUNK_LEN (24) 的整数倍
-        self.seq_length = (seq_length // 24) * 24   # 向下取整到最近的24的倍数
+        self.seq_length = (seq_length // 24) * 24+1   # 向下取整到最近的24的倍数
+        self.eval_tokens = eval_tokens
         
     def __len__(self):
         return self.size
         
     def __getitem__(self, idx):
-        # 生成随机输入和目标
-        inputs = torch.randint(0, 50257, (self.seq_length,))
-        targets = torch.randint(0, 50257, (self.seq_length,))
+        # 从eval_tokens中随机选择一个起始位置
+        if len(self.eval_tokens) >= self.seq_length + 1:  # +1 因为我们需要额外一个token作为最后的目标
+            start_idx = torch.randint(0, len(self.eval_tokens) - self.seq_length - 1, (1,)).item()
+            inputs = torch.tensor(self.eval_tokens[start_idx:start_idx + self.seq_length])
+            targets = torch.tensor(self.eval_tokens[start_idx + 1:start_idx + self.seq_length + 1])
+        else:
+            # 如果eval_tokens长度不够,用随机数据填充
+            inputs = torch.randint(0, 50257, (self.seq_length,))
+            targets = torch.roll(inputs, shifts=-1)  # 向左移动一位
+            targets[-1] = torch.randint(0, 50257, (1,))  # 最后一个位置随机填充
         return {'input_ids': inputs, 'labels': targets}
 
 # DeepSpeed配置
@@ -84,13 +98,14 @@ def train():
             
             # Create masks (all ones since we're using random data)
             batch_masks = torch.ones_like(inputs, dtype=torch.float32).cuda()
-            print("===input shape===", inputs.shape, batch_masks.shape)
             batch_masks = batch_masks
-            loss, _ = model_engine.train_step(inputs, targets, None)
-            
+            loss, _ = train_forward(model_engine, inputs, None)
+            print("===input shape===",loss)
+
             model_engine.backward(loss)
             model_engine.step()
-            
+            gc.collect()
+            torch.cuda.empty_cache()
             if batch_idx % 10 == 0:
                 print(f"Epoch: {epoch}, Batch: {batch_idx}, Loss: {loss.item():.4f}")
 
