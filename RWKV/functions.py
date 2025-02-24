@@ -340,7 +340,7 @@ def batch_generate(
                     target_state = states.batchof(b)
                     if m_postfix_token:
                         postfix = torch.tensor(
-                            [[m_postfix_token]], dtype=torch.long
+                            [m_postfix_token], dtype=torch.long
                         ).to(next(rwkv.parameters()).device)
                         _, target_state = rwkv(postfix, target_state)
                     out_states.shift_states[:, :, b, :] = copy.deepcopy(

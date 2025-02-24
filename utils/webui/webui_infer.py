@@ -454,15 +454,16 @@ class InferAgent:
         return "聊天记录已保存为数据集。"
 
     def save_as_rl_pairs(self):
-        """保存生成历史为DPO对"""
+        """保存生成历史为强化学习生成组"""
         current_time = time.localtime()
         time_string = time.strftime(r"%Y-%m-%d-%H-%M-%S", current_time)
+        os.makedirs(global_config.save_dataset_dir, exist_ok=True)
         jsonl = os.path.join(
             global_config.save_dataset_dir, f"{time_string}_pairs.jsonl"
         )
         with open(jsonl, "w", encoding="utf-8") as f:
             f.write(json.dumps(self.accumulate_logs, ensure_ascii=False))
-        return "生成历史已保存为DPO对。"
+        return "生成历史已保存为强化学习生成组。"
 
     def load_infer_weight(self, load_dir):
         """加载模型权重"""
@@ -520,11 +521,11 @@ class InferAgent:
         str_turn = f"{turn}"
         if str_turn not in self.accumulate_logs:
             self.accumulate_logs[str_turn] = [
-                {"choice": choice, "score": score, "safety": safety}
+                {"choice": choice, "score": score, "safety": safety, "is_best": False}
             ]
         else:
             self.accumulate_logs[str_turn] += [
-                {"choice": choice, "score": score, "safety": safety}
+                {"choice": choice, "score": score, "safety": safety, "is_best": False}
             ]
 
     def update_chatbot_params(

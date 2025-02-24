@@ -55,6 +55,7 @@ def display_round(round_key, choice_index):
     )
 
 
+
 # 保存最佳选择
 def save_best_choice(round_key, choice_index, conversation_text, score, safety):
     round_data = get_round_data(round_key)
@@ -63,9 +64,9 @@ def save_best_choice(round_key, choice_index, conversation_text, score, safety):
 
     for i, choice in enumerate(round_data):
         if i == choice_index:
-            choice["best"] = choice.pop("choice", choice.get("best"))
+            choice["is_best"] = True
         else:
-            choice["choice"] = choice.pop("best", choice.get("choice"))
+            choice["is_best"] = False
     update_round_data(round_key, choice_index, conversation_text, score, safety)
     return "最佳选择已保存", True
 
