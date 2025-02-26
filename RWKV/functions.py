@@ -467,7 +467,7 @@ def batch_chat(
     return speak_sequences_batch, speak_texts_batch, out_states
 
 
-def train_forward(rwkv, batch_idx, batch_masks, states=None):
+def train_forward(rwkv, batch_idx, batch_masks, states=None, v_first=None, return_states=True, return_v_first=False):
     # batch_idx [B,N] torch.LongTensor
     # batch_masks [B, N] torch.tensor
     # data process
@@ -497,7 +497,15 @@ def train_forward(rwkv, batch_idx, batch_masks, states=None):
         loss = torch.sum(loss * mask)
         if sum_mask > 0:
             loss = loss / sum_mask
-    return L2Wrap.apply(loss, logits), new_states
+    
+    if return_v_first and return_states:
+        return L2Wrap.apply(loss, logits), new_states, v_first
+    elif return_states:
+        return L2Wrap.apply(loss, logits), new_states
+    elif return_v_first:
+        return L2Wrap.apply(loss, logits), v_first
+    else:
+        return L2Wrap.apply(loss, logits)
 
 
 def calc_cross_entropy_loss(logits, targets, mask):
@@ -588,3 +596,88 @@ def calc_voice_loss(disc, loss_funcs, origin, out, config, wandb=None):
         )
 
     return disc_loss, gen_loss
+
+
+@torch.no_grad()
+def window_inference(
+    rwkv,
+    token_sequence: List[int],
+    tokenizer,
+    temperature=1.0,
+    top_p=0.85,
+    alpha_presence=0.2,
+    alpha_frequency=0.2,
+    window_size=2048,
+    max_new_tokens=512,
+    token_stop=[65535],
+    token_ban=[]
+):
+    """
+    基于滑动窗口的无状态推理函数
+    
+    参数说明：
+    rwkv: 加载好的RWKV模型实例
+    token_sequence: 初始token序列（会原地修改）
+    tokenizer: 用于解码的分词器
+    temperature: 采样温度（0.0-2.0，0=确定，1=标准，>1更随机）
+    top_p: 核采样概率阈值（0.0-1.0，保留累计概率达top_p的token）
+    alpha_presence: 基础重复惩罚系数（建议0-0.3）
+    alpha_frequency: 频率重复惩罚系数（建议0-0.3）
+    window_size: 滑动窗口长度（建议1024-4096）
+    max_new_tokens: 最大生成token数
+    token_stop: 停止生成token列表（默认[65535]）
+    token_ban: 禁止生成的token黑名单
+    
+    返回值：
+    (generated_tokens, full_sequence) 生成的token列表和完整序列
+    
+    使用示例：
+    >>> initial = [0]  # 初始token
+    >>> generated, full = window_inference(
+    ...     model, 
+    ...     initial,
+    ...     tokenizer,
+    ...     temperature=0.8,
+    ...     window_size=1024,
+    ...     max_new_tokens=200
+    ... )
+    >>> print(tokenizer.decode(generated))
+    """
+    device = next(rwkv.parameters()).device
+    occurrence = {}  # 全局token出现次数跟踪
+    generated = []  # 新生成的token记录
+    
+    for _ in range(max_new_tokens):
+        # 滑动窗口截取（保留最近的window_size个token）
+        input_seq = token_sequence[-window_size:] if len(token_sequence) > window_size else token_sequence
+        
+        # 转换为模型输入格式 [1, seq_len]
+        input_tensor = torch.tensor([input_seq], dtype=torch.long, device=device)
+        
+        # 前向传播（不使用state）
+        logits, _ = rwkv(input_tensor, None)  # 输出形状 [1, seq_len, vocab_size]
+        
+        # 获取最后一个位置的logits
+        last_logits = logits[0, -1, :]
+        
+        # 应用重复惩罚（全局统计）
+        for n in occurrence:
+            last_logits[n] -= alpha_presence + occurrence[n] * alpha_frequency
+        # 应用token黑名单
+        for n in token_ban:
+            last_logits[n] = -1e38
+            
+        # 采样下一个token
+        next_token = sample_logits(last_logits, temperature, top_p)
+        
+        # 更新序列和统计
+        token_sequence.append(next_token)  # 原地修改输入序列
+        generated.append(next_token)
+        # 更新全局出现次数（不随窗口滑动重置）
+        occurrence[next_token] = occurrence.get(next_token, 0) + 1
+            
+        # 停止条件检查
+        if next_token in token_stop:
+            break
+            
+    return generated, token_sequence  # 返回新生成的token和完整序列

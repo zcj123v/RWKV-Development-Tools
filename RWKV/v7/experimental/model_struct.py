@@ -1,29 +1,24 @@
-import os, math, gc, importlib
+import os, math, gc, importlib, types
 import torch
-# torch._C._jit_set_profiling_executor(True)
-# torch._C._jit_set_profiling_mode(True)
 import torch.nn as nn
-from torch.nn import functional as F
-if importlib.util.find_spec('deepspeed'):
-    import deepspeed
-    from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
+import torch.nn.functional as F
 from torch.utils.cpp_extension import load
-import types
+import deepspeed
+from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 from RWKV.v6.state import BlockStateList
 from typing import Union, Optional, List
+from config import global_config
 
-HEAD_SIZE = int(os.environ["RWKV_HEAD_SIZE_A"])
+
+HEAD_SIZE = global_config.train_service_config.model.head_size
 
 def __nop(ob):
     return ob
 
 MyModule = nn.Module
 MyFunction = __nop
-# if os.environ["RWKV_JIT_ON"] == "1":
-#     MyModule = torch.jit.ScriptModule
-#     MyFunction = torch.jit.script_method
 
-CHUNK_LEN = 24
+CHUNK_LEN = global_config.train_service_config.model.chunk_len
 
 full_parent_dir= os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -59,21 +54,24 @@ def RUN_CUDA_RWKV7g(q,w,k,v,a,b):
 
 
 class RWKV_Tmix_x070(MyModule):
-    def __init__(self, args, layer_id):
+    def __init__(self, layer_id, n_layer, n_embd, dim_att, head_size_divisor=8):
         super().__init__()
-        self.args = args
         self.layer_id = layer_id
+        self.n_layer = n_layer
+        self.n_embd = n_embd
+        self.dim_att = dim_att
+        self.head_size_divisor = head_size_divisor
 
         self.head_size = HEAD_SIZE
-        self.n_head = args.dim_att // self.head_size
-        assert args.dim_att % self.n_head == 0
+        self.n_head = dim_att // self.head_size
+        assert dim_att % self.n_head == 0
         H = self.n_head
         N = self.head_size
-        C = args.n_embd
+        C = n_embd
 
         with torch.no_grad():
-            ratio_0_to_1 = layer_id / (args.n_layer - 1)  # 0 to 1
-            ratio_1_to_almost0 = 1.0 - (layer_id / args.n_layer)  # 1 to ~0
+            ratio_0_to_1 = layer_id / (n_layer - 1)  # 0 to 1
+            ratio_1_to_almost0 = 1.0 - (layer_id / n_layer)  # 1 to ~0
             ddd = torch.ones(1, 1, C)
             for i in range(C):
                 ddd[0, 0, i] = i / C
@@ -137,7 +135,7 @@ class RWKV_Tmix_x070(MyModule):
             self.key = nn.Linear(C, C, bias=False)
             self.value = nn.Linear(C, C, bias=False)
             self.output = nn.Linear(C, C, bias=False)
-            self.ln_x = nn.GroupNorm(H, C, eps=(1e-5)*(args.head_size_divisor**2)) # !!! notice eps value !!!
+            self.ln_x = nn.GroupNorm(H, C, eps=(1e-5)*(head_size_divisor**2)) # !!! notice eps value !!!
 
             # !!! initialize if you are using RWKV_Tmix_x070 in your code !!!
             # self.receptance.weight.data.uniform_(-0.5/(C**0.5), 0.5/(C**0.5))
@@ -182,24 +180,23 @@ class RWKV_Tmix_x070(MyModule):
     
 
 class RWKV_CMix_x070(MyModule):
-    def __init__(self, args, layer_id):
+    def __init__(self, layer_id, n_embd, n_layer):
         super().__init__()
-        self.args = args
         self.layer_id = layer_id
         self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
 
         with torch.no_grad():
-            ratio_1_to_almost0 = 1.0 - (layer_id / args.n_layer)  # 1 to ~0
-            ddd = torch.ones(1, 1, args.n_embd)
-            for i in range(args.n_embd):
-                ddd[0, 0, i] = i / args.n_embd
+            ratio_1_to_almost0 = 1.0 - (layer_id / n_layer)  # 1 to ~0
+            ddd = torch.ones(1, 1, n_embd)
+            for i in range(n_embd):
+                ddd[0, 0, i] = i / n_embd
             self.x_k = nn.Parameter(1.0 - torch.pow(ddd, ratio_1_to_almost0**4))
 
-        self.key = nn.Linear(args.n_embd, args.n_embd * 4, bias=False)
-        self.value = nn.Linear(args.n_embd * 4, args.n_embd, bias=False)
+        self.key = nn.Linear(n_embd, n_embd * 4, bias=False)
+        self.value = nn.Linear(n_embd * 4, n_embd, bias=False)
 
         # !!! initialize if you are using RWKV_Tmix_x070 in your code !!!
-        # self.key.weight.data.uniform_(-0.5/(args.n_embd**0.5), 0.5/(args.n_embd**0.5))
+        # self.key.weight.data.uniform_(-0.5/(n_embd**0.5), 0.5/(n_embd**0.5))
         # self.value.weight.data.zero_()
 
     @MyFunction
@@ -210,27 +207,25 @@ class RWKV_CMix_x070(MyModule):
         k = torch.relu(self.key(k)) ** 2
 
         return self.value(k)
-    
 
 class Block(nn.Module):
-    def __init__(self, args, layer_id):
+    def __init__(self, layer_id, n_layer, n_embd, dim_att, head_size_divisor=8, dropout=0):
         super().__init__()
-        self.args = args
         self.layer_id = layer_id
 
-        self.ln1 = nn.LayerNorm(args.n_embd)
-        self.ln2 = nn.LayerNorm(args.n_embd)
+        self.ln1 = nn.LayerNorm(n_embd)
+        self.ln2 = nn.LayerNorm(n_embd)
 
         if self.layer_id == 0:
-            self.ln0 = nn.LayerNorm(args.n_embd)
+            self.ln0 = nn.LayerNorm(n_embd)
 
+        self.att = RWKV_Tmix_x070(layer_id, n_layer, n_embd, dim_att, head_size_divisor)
+        self.ffn = RWKV_CMix_x070(layer_id, n_embd, n_layer)
 
-        self.att = RWKV_Tmix_x070(args, layer_id)
-        self.ffn = RWKV_CMix_x070(args, layer_id)
-
-        if args.dropout > 0:
-            self.drop0 = nn.Dropout(p = args.dropout)
-            self.drop1 = nn.Dropout(p = args.dropout)
+        self.dropout = dropout
+        if dropout > 0:
+            self.drop0 = nn.Dropout(p=dropout)
+            self.drop1 = nn.Dropout(p=dropout)
 
     def forward(self, x, v_first):
         if self.layer_id == 0:
@@ -239,7 +234,14 @@ class Block(nn.Module):
         x_attn, v_first = self.att(self.ln1(x), v_first)
         x = x + x_attn
 
+        if self.dropout > 0:
+            x = self.drop0(x)
+
         x = x + self.ffn(self.ln2(x))
+        
+        if self.dropout > 0:
+            x = self.drop1(x)
+            
         return x, v_first
 
 
@@ -259,116 +261,123 @@ class L2Wrap(torch.autograd.Function):
         gy.scatter_(-1, ids, maxx * factor)
         return (grad_output, gy)
 
+        
+class HelperFunc:
+    """
+    框架辅助类
+    """
+    @staticmethod
+    def calc_model_args(model: dict, head_size: int):
+        if isinstance(model, str):
+            model = torch.load(model, map_location='cpu')
+        n_layer = 0
+        for key in model.keys():
+            if key.startswith("blocks."):
+                n_layer += 1
+        n_embd = model['head.weight'].shape[1]
+        vocab_size = model['head.weight'].shape[0]
+        dim_att = n_embd
+        n_head = dim_att // head_size
+        dim_ffn = int((n_embd * 3.5) // 32 * 32)
+        return n_layer, n_embd, vocab_size, dim_att, n_head, dim_ffn
+
+
 
 class RWKV(nn.Module):
-    def __init__(self, args_in):
+    """
+    模型框架类
+    """
+    def __init__(self, model, head_size: int , head_size_divisor: int = 8):
         super().__init__()
-        args = types.SimpleNamespace()
-        args.n_embd = args_in.model.n_embd
-        args.n_layer = args_in.model.n_layer
-        args.vocab_size = args_in.model.vocab_size
-        args.dropout = args_in.train.dropout
-        args.grad_cp = 1
-        args.lora_on = args_in.lora.lora_on
-        args.ctx_len = args_in.model.ctx_len
-        args.head_size = args_in.model.head_size
-        args.head_size_divisor = args_in.model.head_size_divisor
-        args.load_model = args_in.model.load_model
-        args.lora = args_in.lora
-        args.trainer = args_in.train
-        args.model = args_in.model
-        args.weight_decay = args_in.train.weight_decay
-        self.args = args
-
-        # 统一dtype处理
-        dtype_map = {
-            "fp32": torch.float,
-            "fp16": torch.half,
-            "bf16": torch.bfloat16
-        }
-        self.dtype = dtype_map.get(args_in.model.dtype, torch.bfloat16)
+        self.dtype = torch.bfloat16
+        if isinstance(model, str):
+            model_weights = torch.load(model, map_location='cpu')
+        elif isinstance(model, dict):
+            model_weights = model
+        else:
+            raise ValueError(f"Invalid model type: {type(model)}")
         
-        if self.args.model.dtype == "fp32":
-            self.args.model.dtype = torch.float
-        elif self.args.model.dtype == "fp16":
-            self.args.model.dtype = torch.half
-        elif self.args.model.dtype == "bf16":
-            self.args.model.dtype = torch.bfloat16
+        _args = HelperFunc.calc_model_args(model, head_size)
+        n_layer, n_embd, vocab_size, dim_att, n_head, dim_ffn = _args
+        
+        self.emb = nn.Embedding(vocab_size, n_embd)
+        self.blocks = nn.ModuleList([Block(i, n_layer, n_embd, dim_att, head_size_divisor) for i in range(n_layer)])
+        self.ln_out = nn.LayerNorm(n_embd)
+        self.head = nn.Linear(n_embd, vocab_size, bias=False)
 
-        # load weight
-        model_weights = torch.load(args.load_model, map_location='cpu')
-        model_keys = list(model_weights.keys())
-
-        # calc init layer
-        if args.n_layer < 0:
-            max_block_id = 0
-            for x in model_keys:
-                if 'blocks.' in x:
-                    block_id = int(x.split('.')[1])
-                    max_block_id = max(max_block_id, block_id)
-            args.n_layer = max_block_id + 1
-
-        # calc n_embd
-        if args.n_embd < 0:
-            args.n_embd = model_weights['head.weight'].shape[1]
-
-        # clac vocab_size
-        if args.vocab_size < 0:
-            args.vocab_size = model_weights['head.weight'].shape[0]
-
-        args.dim_att = args.n_embd
-        args.n_head = args.dim_att // args.head_size
-        args.dim_ffn = int((args.n_embd * 3.5) // 32 * 32)
+        # 加载model_weights
+        self.apply_load_model(self, model_weights, self.dtype)
+        self.params_v_first =  None
+        self.params_states = None
 
 
-        self.emb = nn.Embedding(args.vocab_size, args.n_embd)
-        self.blocks = nn.ModuleList([Block(args, i) for i in range(args.n_layer)])
-        self.ln_out = nn.LayerNorm(args.n_embd)
-        self.head = nn.Linear(args.n_embd, args.vocab_size, bias=False)
+    def get_v_first(self):
+        if self.params_v_first is None:
+            self.params_v_first = torch.empty_like(self.emb.weight)
+        return self.params_v_first.cuda()
+    
+    def set_v_first(self, v_first):
+        self.params_v_first = v_first.detach().cpu()
+        return self.params_v_first
 
-        # init dropout
-        if args.dropout > 0:
-            self.drop0 = nn.Dropout(p=args.dropout)
+    def get_states(self, B, C, H, device, dtype):
+        if self.params_states is None:
+            self.params_states = BlockStateList.create(self.n_layer, B, C, H, device, dtype)
+        return self.params_states.cuda()
+    
+    def set_states(self, states):
+        self.params_states = states.detach().cpu()
+        return self.params_states
+    
 
-        model_weights = {k:v for k,v in model_weights.items()}
+    def action_load_model(self, model_weights:dict, dtype:torch.dtype):
+        # 加载model_weights
         self.load_state_dict(model_weights)
-
+        # 将model的参数转换为dtype
         for p in self.parameters():
-            p.data = p.data.to(dtype=self.args.model.dtype)
-
+            p.data = p.data.to(dtype=dtype)
+        # 释放model_weights
         del model_weights
         gc.collect()
         torch.cuda.empty_cache()
-
-    def get_optim_groups(self):
-        args = self.args.trainer
+        # 返回model
+        return self
+    
+    def action_add_dropout(self, dropout:float):
+        self.drop0 = nn.Dropout(p=dropout)
+        return self
+    
+    def get_optim_groups(self, 
+                         weight_decay:float=0.0, 
+                         layerwise_lr:float=0.0, 
+                         my_pile_stage:int=1):
         lr_decay = set()
         lr_1x = set()
         lr_2x = set()
         lr_3x = set()
         for n, p in self.named_parameters():
-            if (("_w1" in n) or ("_w2" in n)) and (args.layerwise_lr > 0):
+            if (("_w1" in n) or ("_w2" in n)) and (layerwise_lr > 0):
                 lr_1x.add(n)
-            elif (("time_sta" in n) and (args.weight_decay > 0)):
+            elif (("time_sta" in n) and (weight_decay > 0)):
                 lr_decay.add(n)
-            elif (("time_mix" in n) or ("time_maa" in n)) and (args.layerwise_lr > 0):
-                if args.my_pile_stage == 2:
+            elif (("time_mix" in n) or ("time_maa" in n)) and (layerwise_lr > 0):
+                if my_pile_stage == 2:
                     lr_2x.add(n)
                 else:
                     lr_1x.add(n)
-            elif (("time_decay" in n) or ("time_daaaa" in n) or ("att.w0" in n)) and (args.layerwise_lr > 0):
-                if args.my_pile_stage == 2:
+            elif (("time_decay" in n) or ("time_daaaa" in n) or ("att.w0" in n)) and (layerwise_lr > 0):
+                if my_pile_stage == 2:
                     lr_3x.add(n)
                 else:
                     lr_2x.add(n)
-            elif ("time_faaaa" in n) and (args.layerwise_lr > 0):
-                if args.my_pile_stage == 2:
+            elif ("time_faaaa" in n) and (layerwise_lr > 0):
+                if my_pile_stage == 2:
                     lr_2x.add(n)
                 else:
                     lr_1x.add(n)
-            elif ("time_first" in n) and (args.layerwise_lr > 0):
+            elif ("time_first" in n) and (layerwise_lr > 0):
                 lr_3x.add(n)
-            elif (len(p.squeeze().shape) >= 2) and (args.weight_decay > 0) and (".weight" in n):
+            elif (len(p.squeeze().shape) >= 2) and (weight_decay > 0) and (".weight" in n):
                 lr_decay.add(n)
             else:
                 lr_1x.add(n)
@@ -378,75 +387,100 @@ class RWKV(nn.Module):
         lr_2x = sorted(list(lr_2x))
         lr_3x = sorted(list(lr_3x))
 
-
-
         param_dict = {n: p for n, p in self.named_parameters()}
         
-        if args.layerwise_lr > 0:
-            if args.my_pile_stage == 2:
+        if layerwise_lr > 0:
+            if my_pile_stage == 2:
                 optim_groups = [
-                    {"params": [param_dict[n] for n in lr_1x], "weight_decay": 0.0, "my_lr_scale": 1.0},
-                    {"params": [param_dict[n] for n in lr_2x], "weight_decay": 0.0, "my_lr_scale": 5.0},# test: 2e-3 / args.lr_init},
-                    {"params": [param_dict[n] for n in lr_3x], "weight_decay": 0.0, "my_lr_scale": 5.0},# test: 3e-3 / args.lr_init},
+                    {"params": [param_dict[n] for n in lr_1x], 
+                     "weight_decay": 0.0, 
+                     "my_lr_scale": 1.0},
+                    {"params": [param_dict[n] for n in lr_2x], 
+                     "weight_decay": 0.0, 
+                     "my_lr_scale": 5.0},
+                    {"params": [param_dict[n] for n in lr_3x], 
+                     "weight_decay": 0.0, 
+                     "my_lr_scale": 5.0},
                 ]
             else:
                 optim_groups = [
-                    {"params": [param_dict[n] for n in lr_1x], "weight_decay": 0.0, "my_lr_scale": 1.0},
-                    {"params": [param_dict[n] for n in lr_2x], "weight_decay": 0.0, "my_lr_scale": 2.0},
-                    {"params": [param_dict[n] for n in lr_3x], "weight_decay": 0.0, "my_lr_scale": 3.0},
+                    {"params": [param_dict[n] for n in lr_1x], 
+                     "weight_decay": 0.0, 
+                     "my_lr_scale": 1.0},
+                    {"params": [param_dict[n] for n in lr_2x], 
+                     "weight_decay": 0.0, 
+                     "my_lr_scale": 2.0},
+                    {"params": [param_dict[n] for n in lr_3x],
+                    "weight_decay": 0.0,
+                    "my_lr_scale": 3.0},
                 ]
         else:
-            optim_groups = [{"params": [param_dict[n] for n in lr_1x], "weight_decay": 0.0, "my_lr_scale": 1.0}]
+            optim_groups = [{"params": [param_dict[n] for n in lr_1x], 
+                             "weight_decay": 0.0, 
+                             "my_lr_scale": 1.0}]
 
-        if args.weight_decay > 0:
-            optim_groups += [{"params": [param_dict[n] for n in lr_decay], "weight_decay": args.weight_decay, "my_lr_scale": 1.0}]
+        if weight_decay > 0:
+            optim_groups += [{"params": [param_dict[n] for n in lr_decay], 
+                              "weight_decay": weight_decay, 
+                              "my_lr_scale": 1.0}]
 
+        return optim_groups
+    
+    def get_optimizer(self, 
+                    optim_groups, 
+                    lr_init:float=global_config.train_service_config.train.lr_init, 
+                    beta1:float=global_config.train_service_config.train.beta1, 
+                    beta2:float=global_config.train_service_config.train.beta2, 
+                    eps:float=global_config.train_service_config.train.adam_eps, 
+                    adamw_mode:bool=global_config.train_service_config.train.adamw_mode, 
+                    weight_decay:float=global_config.train_service_config.train.weight_decay):
+        
         optimizer = DeepSpeedCPUAdam(
                 optim_groups,
-                lr=self.args.trainer.lr_init,
-                betas=(self.args.trainer.beta1, self.args.trainer.beta2),
-                eps=self.args.trainer.adam_eps,
-                adamw_mode=self.args.trainer.adamw_mode,
-                weight_decay=self.args.trainer.weight_decay,
+                lr=lr_init,
+                betas=(beta1, beta2),
+                eps=eps,
+                adamw_mode=adamw_mode,
+                weight_decay=weight_decay,
                 amsgrad=False,
                 bias_correction=True,
             )
 
+        return optimizer
+    
+    def get_lr_scheduler(self, 
+                        optimizer, 
+                        warmup_min_lr:float=global_config.train_service_config.train.lr_final,
+                        warmup_max_lr:float=global_config.train_service_config.train.lr_init, 
+                        warmup_num_steps:int=global_config.train_service_config.train.warmup_steps, 
+                        warmup_type:str=global_config.train_service_config.train.warmup_type):
         lr_scheduler = deepspeed.runtime.lr_schedules.WarmupLR(
             optimizer,
-            warmup_min_lr=self.args.trainer.lr_final,
-            warmup_max_lr=self.args.trainer.lr_init,
-            warmup_num_steps=self.args.trainer.warmup_steps,
-            warmup_type="linear",
+            warmup_min_lr=warmup_min_lr,
+            warmup_max_lr=warmup_max_lr,
+            warmup_num_steps=warmup_num_steps,
+            warmup_type=warmup_type,
         )
+        return lr_scheduler
 
-        return optimizer, lr_scheduler
 
-
-    def forward(self, idx: Union[torch.Tensor, list], states: BlockStateList = None,v_first=None):
-        args = self.args
-
-        # idx
-        x = torch.tensor(idx, device=next(self.parameters()).device, dtype=torch.long)
-
+    def forward(self, idx: Union[torch.Tensor, list], states: BlockStateList = None):
         # 计算logits
         args = self.args
 
-        B, T = x.size()
+        B, T = idx.size()
         C = args.n_embd
         H = args.dim_att // args.head_size
 
         assert T <= self.args.ctx_len, "Cannot forward, model ctx_len is exhausted."
         assert C == H * args.head_size
         
-        x = self.emb(x)
+        x = self.emb(idx)
 
         if args.dropout > 0:
             x = self.drop0(x)
 
-        if v_first is None:
-            v_first = torch.empty_like(x)
-        v_first = v_first.to("cuda")
+        v_first = self.get_v_first()
 
         for block in self.blocks:
             if args.grad_cp == 1:
@@ -456,7 +490,7 @@ class RWKV(nn.Module):
 
         x = self.ln_out(x)
         logits = self.head(x)
+
+        self.set_v_first(v_first)
         # clean states
-        return logits, v_first.detach().cpu()
-
-
+        return logits, None

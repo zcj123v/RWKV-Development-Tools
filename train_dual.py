@@ -5,6 +5,7 @@ import torch
 import deepspeed
 import gc
 from torch.utils.data import Dataset, DataLoader
+from torch.nn import functional as F
 from config import global_config
 
 # Set head size in environment
@@ -12,7 +13,9 @@ train_config = global_config.train_service_config
 os.environ["RWKV_HEAD_SIZE_A"] = str(global_config.pretrain_script_config.model.head_size)
 
 # Import model after setting environment variables
-from RWKV.v7.model import RWKV, RWKVOptimizer
+from RWKV.v7.Dual.mode import RWKVMode
+from RWKV.v7.Dual.model import RWKV_Dual
+from RWKV.v7.Dual.optimizer import RWKVOptimizer
 
 # Initialize tokenizer
 tokenizer = global_config.tokenizer_eval
@@ -29,7 +32,7 @@ eval_tokens = eval_tokens[:eval_tokens_len]
 class RWKVDataset(Dataset):
     def __init__(self, size=5, seq_length=512):
         self.size = size
-        # Important: removed +1 to ensure divisibility by CHUNK_LEN (24)
+        # Important: ensure divisibility by CHUNK_LEN (24)
         self.seq_length = (seq_length // 24) * 24
         self.eval_tokens = eval_tokens
         
@@ -77,12 +80,12 @@ ds_config = {
 
 def test_inference(model, tokenizer):
     """
-    使用window_inference函数测试模型的推理能力
+    使用模型的generate方法测试推理能力
     """
     print("\n===== 开始推理测试 =====")
     
-    # 将模型切换到评估模式
-    model.eval()
+    # 将模型切换到RNN模式
+    model.set_mode(RWKVMode.RNN)
     
     # 准备提示文本
     prompt = "RWKV是一种创新的语言模型架构，它结合了"
@@ -91,42 +94,59 @@ def test_inference(model, tokenizer):
     print(f"提示: '{prompt}'")
     print("生成中...")
     
-    # 使用window_inference函数进行推理
+    # 使用模型的generate方法进行推理
     with torch.no_grad():
-        generated_tokens, full_sequence = window_inference(
-            model,
-            prompt_tokens.copy(),  # 使用copy避免修改原始tokens
-            tokenizer,
+        generated_tokens = model.generate(
+            prompt_tokens,
+            max_new_tokens=200,
             temperature=0.7,
             top_p=0.9,
-            alpha_presence=0.2,
-            alpha_frequency=0.2,
-            window_size=512,  # 滑动窗口大小
-            max_new_tokens=200,  # 最多生成200个token
-            token_stop=[0]  # 以0作为停止token
+            repetition_penalty=1.1,
+            stop_sequences=[[0]]  # 以0作为停止token
         )
     
     # 解码生成的文本
-    generated_text = tokenizer.decode(generated_tokens)
+    generated_text = tokenizer.decode(generated_tokens[len(prompt_tokens):])
     print("\n===== 生成结果 =====")
     print(prompt + generated_text)
     print("=====================")
     
-    # 切换回训练模式
-    model.train()
+    # 切换回Transformer模式用于训练
+    model.set_mode(RWKVMode.TRANSFORMER)
     
     return generated_text
 
+def create_optimizer(model, config):
+    """
+    创建优化器和学习率调度器，使用 RWKVOptimizer 工具类
+    """
+    # 使用 RWKVOptimizer 创建优化器和学习率调度器
+    optimizer, lr_scheduler = RWKVOptimizer.create_optimizer(
+        model=model,
+        lr_init=config.train.lr_init if hasattr(config.train, 'lr_init') else 5e-4,
+        lr_final=config.train.lr_final if hasattr(config.train, 'lr_final') else 1e-5,
+        beta1=config.train.beta1 if hasattr(config.train, 'beta1') else 0.9,
+        beta2=config.train.beta2 if hasattr(config.train, 'beta2') else 0.99,
+        adam_eps=config.train.adam_eps if hasattr(config.train, 'adam_eps') else 1e-8,
+        weight_decay=config.train.weight_decay if hasattr(config.train, 'weight_decay') else 0.01,
+        warmup_steps=config.train.warmup_steps if hasattr(config.train, 'warmup_steps') else 1000,
+        # 可选参数
+        layerwise_lr=config.train.layerwise_lr if hasattr(config.train, 'layerwise_lr') else 0.0,
+        my_pile_stage=0,  # 默认为0
+        adamw_mode=True   # 使用AdamW模式
+    )
+    
+    return optimizer, lr_scheduler
+
 def train():
-    print("Initializing RWKV model...")
+    print("Initializing RWKV Dual model...")
     
     # Make sure ctx_len is divisible by CHUNK_LEN (24)
     ctx_len = train_config.model.ctx_len if hasattr(train_config.model, 'ctx_len') else 1024
     ctx_len = (ctx_len // 24) * 24
     
-    # Create model instance using the create_rwkv_model function
-    model = RWKVOptimizer.create_rwkv_model(
-        train_config.model.load_model if hasattr(train_config.model, 'load_model') else None,
+    # Create model instance
+    model = RWKV_Dual(
         # Model architecture parameters
         n_embd=train_config.model.n_embd if hasattr(train_config.model, 'n_embd') else -1,
         n_layer=train_config.model.n_layer if hasattr(train_config.model, 'n_layer') else -1,
@@ -136,30 +156,24 @@ def train():
         ctx_len=ctx_len,
         
         # Model loading parameters  
-        
+        load_model=train_config.model.load_model if hasattr(train_config.model, 'load_model') else None,
         dtype=train_config.model.dtype if hasattr(train_config.model, 'dtype') else "bf16",
         
         # Training parameters
         dropout=train_config.train.dropout if hasattr(train_config.train, 'dropout') else 0.0,
         grad_cp=1,
+        
+        # Set to Transformer mode for training
+        mode=RWKVMode.TRANSFORMER
     )
+    
+    # Add tokenizer attribute to model for convenience
+    model.tokenizer = tokenizer
     
     print(f"Model initialized with {model.n_layer} layers, {model.n_embd} embedding size")
     
-    # Get optimizer and scheduler components directly from the model
-    optimizer, lr_scheduler = RWKVOptimizer.create_optimizer(
-        model,
-        lr_init=train_config.train.lr_init if hasattr(train_config.train, 'lr_init') else 5e-4,
-        lr_final=train_config.train.lr_final if hasattr(train_config.train, 'lr_final') else 1e-5,
-        beta1=train_config.train.beta1 if hasattr(train_config.train, 'beta1') else 0.9,
-        beta2=train_config.train.beta2 if hasattr(train_config.train, 'beta2') else 0.99,
-        adam_eps=train_config.train.adam_eps if hasattr(train_config.train, 'adam_eps') else 1e-8,
-        weight_decay=train_config.train.weight_decay if hasattr(train_config.train, 'weight_decay') else 0.01,
-        layerwise_lr=train_config.train.layerwise_lr if hasattr(train_config.train, 'layerwise_lr') else 0.0,
-        my_pile_stage=train_config.train.my_pile_stage if hasattr(train_config.train, 'my_pile_stage') else 0,
-        adamw_mode=train_config.train.adamw_mode if hasattr(train_config.train, 'adamw_mode') else True,
-        warmup_steps=train_config.train.warmup_steps if hasattr(train_config.train, 'warmup_steps') else 1000,
-    )
+    # Create optimizer and scheduler
+    optimizer, lr_scheduler = create_optimizer(model, train_config)
     
     # Initialize dataset and dataloader
     # Make sure seq_length is divisible by CHUNK_LEN (24)
@@ -171,7 +185,7 @@ def train():
     print(f"Dataset prepared with sequence length {seq_length}, batch size {batch_size}")
     
     # Initialize DeepSpeed
-    model_engine, optimizer, _, _ = deepspeed.initialize(
+    model_engine, optimizer, _, lr_scheduler = deepspeed.initialize(
         model=model,
         model_parameters=model.parameters(),
         config=ds_config,
@@ -179,8 +193,9 @@ def train():
         lr_scheduler=lr_scheduler
     )
     
+    test_inference(model_engine.module, tokenizer)
+
     print("Starting training...")
-    
     # Training loop
     model_engine.train()
     for epoch in range(2):  # 2 epochs as an example
@@ -197,7 +212,8 @@ def train():
             if pad_len > 0:
                 inputs = F.pad(inputs, (0, pad_len), "constant", 0)
                 
-            logits, _ = model_engine(inputs)
+            # In Transformer mode, v_first is None initially
+            logits = model_engine(inputs, v_first=None, return_state=False, return_v_first=False)
             
             # If we padded, remove padding from logits before computing loss
             if pad_len > 0:
@@ -220,7 +236,15 @@ def train():
             
             if batch_idx % 10 == 0:
                 print(f"Epoch: {epoch}, Batch: {batch_idx}, Loss: {loss.item():.4f}")
-                
+                # 添加内存监控
+                mem_info = RWKVOptimizer.monitor_memory_usage()
+                if 'error' not in mem_info:
+                    print(f"GPU内存: 已分配={mem_info['allocated_gb']:.2f}GB, "
+                          f"总计={mem_info['total_gb']:.2f}GB, "
+                          f"使用率={mem_info['utilization']:.2%}")
+                    if mem_info['warning']:
+                        print("警告: GPU内存使用率过高!")
+            
             # Manual memory cleanup
             gc.collect()
             torch.cuda.empty_cache()
@@ -232,17 +256,17 @@ def train():
         
         # 每个epoch结束后进行推理测试
         print(f"\n执行Epoch {epoch}后的推理测试")
-        # 注意：我们需要使用model_engine.module来访问实际的模型
+        # 确保模型在推理前处于正确的模式
+        model_engine.module.set_mode(RWKVMode.RNN)
         test_inference(model_engine.module, tokenizer)
+        # 推理后切换回训练模式
+        model_engine.module.set_mode(RWKVMode.TRANSFORMER)
         
         # Save checkpoint after each epoch
         if hasattr(train_config, 'output_dir'):
-            save_path = os.path.join(train_config.output_dir, f"rwkv_epoch_{epoch}.pt")
+            save_path = os.path.join(train_config.output_dir, f"rwkv_dual_epoch_{epoch}")
             model_engine.save_checkpoint(save_path)
             print(f"Model checkpoint saved to {save_path}")
 
 if __name__ == "__main__":
-    from torch.nn import functional as F
-    # 导入window_inference函数
-    from RWKV.functions import window_inference
-    train()
+    train() 

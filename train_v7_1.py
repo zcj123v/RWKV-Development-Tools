@@ -12,7 +12,7 @@ train_config = global_config.train_service_config
 os.environ["RWKV_HEAD_SIZE_A"] = str(global_config.pretrain_script_config.model.head_size)
 
 # Import model after setting environment variables
-from RWKV.v7.model import RWKV, RWKVOptimizer
+from RWKV.v7.model import RWKV, create_rwkv_model, RWKVOptimizer
 
 # Initialize tokenizer
 tokenizer = global_config.tokenizer_eval
@@ -75,47 +75,6 @@ ds_config = {
     "train_micro_batch_size_per_gpu": 2
 }
 
-def test_inference(model, tokenizer):
-    """
-    使用window_inference函数测试模型的推理能力
-    """
-    print("\n===== 开始推理测试 =====")
-    
-    # 将模型切换到评估模式
-    model.eval()
-    
-    # 准备提示文本
-    prompt = "RWKV是一种创新的语言模型架构，它结合了"
-    prompt_tokens = tokenizer.encode(prompt)
-    
-    print(f"提示: '{prompt}'")
-    print("生成中...")
-    
-    # 使用window_inference函数进行推理
-    with torch.no_grad():
-        generated_tokens, full_sequence = window_inference(
-            model,
-            prompt_tokens.copy(),  # 使用copy避免修改原始tokens
-            tokenizer,
-            temperature=0.7,
-            top_p=0.9,
-            alpha_presence=0.2,
-            alpha_frequency=0.2,
-            window_size=512,  # 滑动窗口大小
-            max_new_tokens=200,  # 最多生成200个token
-            token_stop=[0]  # 以0作为停止token
-        )
-    
-    # 解码生成的文本
-    generated_text = tokenizer.decode(generated_tokens)
-    print("\n===== 生成结果 =====")
-    print(prompt + generated_text)
-    print("=====================")
-    
-    # 切换回训练模式
-    model.train()
-    
-    return generated_text
 
 def train():
     print("Initializing RWKV model...")
@@ -125,8 +84,7 @@ def train():
     ctx_len = (ctx_len // 24) * 24
     
     # Create model instance using the create_rwkv_model function
-    model = RWKVOptimizer.create_rwkv_model(
-        train_config.model.load_model if hasattr(train_config.model, 'load_model') else None,
+    model = create_rwkv_model(
         # Model architecture parameters
         n_embd=train_config.model.n_embd if hasattr(train_config.model, 'n_embd') else -1,
         n_layer=train_config.model.n_layer if hasattr(train_config.model, 'n_layer') else -1,
@@ -136,7 +94,7 @@ def train():
         ctx_len=ctx_len,
         
         # Model loading parameters  
-        
+        load_model=train_config.model.load_model if hasattr(train_config.model, 'load_model') else None,
         dtype=train_config.model.dtype if hasattr(train_config.model, 'dtype') else "bf16",
         
         # Training parameters
@@ -230,19 +188,26 @@ def train():
         avg_loss = total_loss / num_batches
         print(f"Epoch {epoch} completed. Average loss: {avg_loss:.4f}")
         
-        # 每个epoch结束后进行推理测试
-        print(f"\n执行Epoch {epoch}后的推理测试")
-        # 注意：我们需要使用model_engine.module来访问实际的模型
-        test_inference(model_engine.module, tokenizer)
-        
         # Save checkpoint after each epoch
         if hasattr(train_config, 'output_dir'):
             save_path = os.path.join(train_config.output_dir, f"rwkv_epoch_{epoch}.pt")
             model_engine.save_checkpoint(save_path)
             print(f"Model checkpoint saved to {save_path}")
+        
 
+        # Test generation after each epoch
+        print("\nRunning text generation test...")
+        # We need to use the unwrapped model since DeepSpeed wraps it
+        model_to_generate = model_engine.module  # 获取原始模型实例
+        generated_tokens = model_to_generate.generate_chinese(
+            torch.tensor([tokenizer.encode(eval_text[:100])]), 
+            max_length=50,
+            tokenizer=tokenizer
+        )
+        generated_text = tokenizer.decode(generated_tokens)
+        print(f"Generated text:\n{generated_text}\n")
+        # Continue training
+        model_engine.train()
 if __name__ == "__main__":
     from torch.nn import functional as F
-    # 导入window_inference函数
-    from RWKV.functions import window_inference
     train()
