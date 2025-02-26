@@ -187,19 +187,21 @@ class MultimodalDataset(Dataset):
         elif "data" in line_dict:
             line_clist = cList.from_v1_datset_dicts(line_dict["data"])
             for conversation in line_clist:
+                last_len= len(line_units)
                 sos_tokens = global_config.role[conversation.role]["prefix"]
                 eos_tokens = global_config.role[conversation.role]["postfix"]
 
                 line_units += sos_tokens
                 c_str = conversation()
                 line_units += self.tokenize_func(c_str) + eos_tokens
-            qa_mask = (
-                int(conversation.role in global_config.ego_types)
-                if self.qa_mask_on
-                else 1
-            )
-
-            line_masks += [1 * qa_mask] * len(line_units)
+                
+                qa_mask = (
+                    int(conversation.role in global_config.ego_types)
+                    if self.qa_mask_on
+                    else 1
+                )
+                line_masks += [1 * qa_mask] * (len(line_units)-last_len)
+                
             line_units += [self.eod]
             line_masks += [0]
         # rwkv dataset
