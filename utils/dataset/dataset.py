@@ -1,5 +1,6 @@
 from config import global_config
 import os
+from collections import OrderedDict
 
 config = (
     global_config.infer_service_config
@@ -109,7 +110,7 @@ class MultimodalDataset(Dataset):
                     acc_ctx += ctx_len
 
         with open(self.idx_dir, "w", encoding="utf-8") as f:
-            f.write(idx_str)
+            f.write(idx_str.rstrip("\n"))
         with open(self.dataset_metadata_dir, "w", encoding="utf-8") as f:
             f.write(json.dumps({"total_ctx": acc_ctx}))
         return acc_ctx
@@ -133,6 +134,7 @@ class MultimodalDataset(Dataset):
         if "data_dict_list" in line_dict:
             line_clist = cList.from_dicts(line_dict["data_dict_list"])
             for conversation in line_clist:
+                last_len = len(line_units)
                 sos_tokens = global_config.role[conversation.role]["prefix"]
                 eos_tokens = global_config.role[conversation.role]["postfix"]
 
@@ -166,7 +168,7 @@ class MultimodalDataset(Dataset):
 
                 prefix_masks = [conversation.prefix_mask] * len(sos_tokens)
                 content_masks = [conversation.content_mask] * (
-                    len(line_units) - len(sos_tokens) - len(eos_tokens)
+                    len(line_units) - last_len - len(sos_tokens) - len(eos_tokens)
                 )
                 post_masks = [conversation.postfix_mask] * len(eos_tokens)
                 qa_mask = (
@@ -185,19 +187,21 @@ class MultimodalDataset(Dataset):
         elif "data" in line_dict:
             line_clist = cList.from_v1_datset_dicts(line_dict["data"])
             for conversation in line_clist:
+                last_len= len(line_units)
                 sos_tokens = global_config.role[conversation.role]["prefix"]
                 eos_tokens = global_config.role[conversation.role]["postfix"]
 
                 line_units += sos_tokens
                 c_str = conversation()
                 line_units += self.tokenize_func(c_str) + eos_tokens
-            qa_mask = (
-                int(conversation.role in global_config.ego_types)
-                if self.qa_mask_on
-                else 1
-            )
-
-            line_masks += [1* qa_mask] * len(line_units) * qa_mask
+                
+                qa_mask = (
+                    int(conversation.role in global_config.ego_types)
+                    if self.qa_mask_on
+                    else 1
+                )
+                line_masks += [1 * qa_mask] * (len(line_units)-last_len)
+                
             line_units += [self.eod]
             line_masks += [0]
         # rwkv dataset
@@ -540,7 +544,6 @@ class MultimodalDataset(Dataset):
                             end = None if j != len(find_idxs) - 1 else end_offset
                             data_f.seek(bucket_start_pos)
                             content = data_f.read(bucket_len)
-                            # print(content)
                             units += self.tokenize_func(content)[start:end]
                             masks += [1] * len(units)
                         return units, masks
@@ -608,3 +611,116 @@ def read_bin_wav(fp, config):
         return torch.cat([wav.clone(), wav.clone()], dim=0)
     else:
         return wav
+
+
+class RLGroupDataset(Dataset):
+    def __init__(
+        self,
+        dataset_dir: str,
+        tokenizer,
+        voice_read_func: callable,
+        qa_mask_on: bool = True,
+    ):
+        self.dataset_dir = dataset_dir
+        self.tokenizer = tokenizer
+        self.voice_read_func = voice_read_func
+        self.qa_mask_on = qa_mask_on
+        self.datasets = [f for f in os.listdir(dataset_dir) if f.endswith(".jsonl")]
+        self.eod = 0
+
+    @staticmethod
+    def read_jsonl_as_ordered_dicts(file_path):
+        ordered_dicts = []
+        with open(file_path, "r", encoding="utf-8") as file:
+            for line in file:
+                # 将每一行解析为有序字典
+                ordered_dict = json.loads(line, object_pairs_hook=OrderedDict)
+                ordered_dicts.append(ordered_dict)
+        return ordered_dicts
+
+    def encode_conversations_to_units(self, conversations: cList):
+        line_units = []
+        line_masks = []
+        for conversation in conversations:
+            last_len = len(line_units)
+            sos_tokens = global_config.role[conversation.role]["prefix"]
+            eos_tokens = global_config.role[conversation.role]["postfix"]
+
+            line_units += sos_tokens
+            c_str = conversation()
+            n_voice = -1
+            while c_str.find("<-voice->") != -1:
+                n_voice += 1
+                voice_index = c_str.find("<-voice->")
+                pre_str = c_str[:voice_index]
+                line_units += self.tokenizer.encode(pre_str) + voice_sos_tokens
+                voice_unit_len = (
+                    config.vocoder.head.hop_length * config.vocoder.adapter.chunk_len
+                )
+                line_units += (
+                    list(
+                        torch.split(
+                            self.voice_read_func(
+                                conversation.voice[n_voice], config
+                            ).unsqueeze(0),
+                            voice_unit_len,
+                            dim=2,
+                        )
+                    )
+                    + voice_eos_tokens
+                )
+                c_str = c_str.replace("<-voice->", "", 1)
+                c_str = c_str[voice_index:]
+            line_units += self.tokenizer.encode(c_str) + eos_tokens
+
+            prefix_masks = [conversation.prefix_mask] * len(sos_tokens)
+            content_masks = [conversation.content_mask] * (
+                len(line_units) - last_len - len(sos_tokens) - len(eos_tokens)
+            )
+            post_masks = [conversation.postfix_mask] * len(eos_tokens)
+            qa_mask = (
+                int(conversation.role in global_config.ego_types)
+                if self.qa_mask_on
+                else 1
+            )
+
+            line_masks += [
+                ele * qa_mask for ele in prefix_masks + content_masks + post_masks
+            ]
+
+        line_units += [self.eod]
+        line_masks += [0]
+        return line_units, line_masks
+
+    def __len__(self):
+        return len(self.datasets)
+
+    def __getitem__(self, idx):
+
+        rl_dict = self.read_jsonl_as_ordered_dicts(
+            f"{self.dataset_dir}/{self.datasets[idx]}"
+        )
+
+        lines = []
+
+        for line in rl_dict:
+            turns = []
+            for i, (key, choices) in enumerate(line.items()):
+                turn_rollouts = []
+                for j, choice in enumerate(choices):
+                    score = choice["score"]
+                    conversation_dict = choice["choice"]
+                    conversations = cList.from_dicts(conversation_dict)
+                    units, masks = self.encode_conversations_to_units(conversations)
+                    turn_rollouts.append(
+                        {
+                            "units": units,
+                            "masks": masks,
+                            "score": score,
+                        }
+                    )
+
+                turns.append(turn_rollouts)
+            lines.append(turns)
+
+        return lines
