@@ -4,13 +4,14 @@ import torch
 # torch._C._jit_set_profiling_mode(True)
 import torch.nn as nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 if importlib.util.find_spec('deepspeed'):
     import deepspeed
     from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 import types
-from RWKV.v6.state import BlockStateList,BlockState
+from RWKV.v7.state import BlockStateList,BlockState, TimeMixState, ChannelMixState
 from typing import Union, Optional, List
-
+from fla.ops.rwkv7 import chunk_rwkv7
 
 HEAD_SIZE = int(os.environ["RWKV_HEAD_SIZE_A"])
 
@@ -23,217 +24,14 @@ MyFunction = __nop
 #     MyModule = torch.jit.ScriptModule
 #     MyFunction = torch.jit.script_method
 
-CHUNK_LEN = 24
-
-full_parent_dir= os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-print('x070 Wind Triton Kernel Mode')
-
-import torch as th
-import triton
-import triton.language as tl
-
-@triton.jit
-def IND4(a,b,c,d,nb,nc,nd):
-    return ((a*nb+b)*nc+c)*nd+d
-@triton.jit
-def IND5(a,b,c,d,e,nb,nc,nd,ne):
-    return (((a*nb+b)*nc+c)*nd+d)*ne+e
-
-@triton.jit
-def _prod(a,b): return a*b
-
-# inv(I-A) where A is a strictly lower triangular nxn matrix
-@triton.jit
-def tri_minv(A, n:tl.constexpr, prec:tl.constexpr):
-    i = tl.arange(0,n)
-    prod = (i[None,:]==i[:,None]).to(tl.float32)
-    for j in range(n-1):
-        prod += tl_dot(prec, prod, (A*((i[None,:]==j)*(i[:,None]>i[None,:]))).trans())
-    return prod.trans()
-
-@triton.jit
-def fw_attn_triton(w_,q_,k_,v_,a_,b_, s0_,y_,s_,sT_, B:tl.constexpr,T:tl.constexpr,H:tl.constexpr,C:tl.constexpr,dT:tl.constexpr, prec:tl.constexpr):
-    bi = tl.program_id(1)
-    hi = tl.program_id(0)
-
-    i = tl.arange(0,C)[None,:]
-    state = tl.load(s0_+IND4(bi,hi,i.trans(),i, H,C,C)).to(tl.float32)
-    for t0 in range(T//dT):
-        t = t0*dT+tl.arange(0,dT)[:,None]
-        sw = tl.load(w_+IND4(bi,t,hi,i, T,H,C)).to(tl.float32)
-        sq = tl.load(q_+IND4(bi,t,hi,i, T,H,C)).to(tl.float32)
-        sk = tl.load(k_+IND4(bi,t,hi,i, T,H,C)).to(tl.float32)
-        sv = tl.load(v_+IND4(bi,t,hi,i, T,H,C)).to(tl.float32)
-        sa = tl.load(a_+IND4(bi,t,hi,i, T,H,C)).to(tl.float32)
-        sb = tl.load(b_+IND4(bi,t,hi,i, T,H,C)).to(tl.float32)
-
-        w = (-sw.exp()).exp()
-        fw = tl.reduce(w, 0, _prod, keep_dims=True)
-        incl_pref = tl.cumprod(w,axis=0)
-        non_incl_pref = incl_pref / w
-        inv_incl_pref = 1 / incl_pref
-
-        wq = sq * incl_pref
-        wa = sa * non_incl_pref
-        kwi = sk * inv_incl_pref
-        bwi = sb * inv_incl_pref
-
-        mask1 = (t > t.trans())
-        ab = tl_dot(prec, wa, bwi.trans()) * mask1
-        ak = tl_dot(prec, wa, kwi.trans()) * mask1
-
-        ab_inv = tri_minv(ab, dT, prec)
-
-        ab_u = tl_dot(prec, ak, sv) + tl_dot(prec, wa, state.trans())
-        u = tl_dot(prec, ab_inv, ab_u)
-        mask2 = (t >= t.trans())
-        qk = tl_dot(prec, wq, kwi.trans()) * mask2
-        qb = tl_dot(prec, wq, bwi.trans()) * mask2
-        yy = tl_dot(prec, qk, sv) + tl_dot(prec, qb, u) + tl_dot(prec, wq, state.trans())
-        tl.store(y_+IND4(bi,t,hi,i, T,H,C), yy.to(tl.bfloat16))
-
-        tl.store(s_+IND5(bi,hi,t0,i.trans(),i, H,T//dT,C,C), state.to(tl.float32))
-        state = state * fw + tl_dot(prec, sv.trans(), kwi*fw) + tl_dot(prec, u.trans(), bwi*fw)
-    tl.store(sT_+IND4(bi,hi,i.trans(),i, H,C,C), state.to(tl.bfloat16))
-
-@triton.jit
-def bw_attn_triton(w_,q_,k_,v_,a_,b_, dy_,s_,dsT_, dw_,dq_,dk_,dv_,da_,db_,ds0_, B:tl.constexpr,T:tl.constexpr,H:tl.constexpr,C:tl.constexpr,dT:tl.constexpr, prec:tl.constexpr):
-    bi = tl.program_id(1)
-    hi = tl.program_id(0)
-
-    i = tl.arange(0,C)[None,:]
-    dstate = tl.load(dsT_+IND4(bi,hi,i.trans(),i, H,C,C)).to(tl.float32)
-
-    for t0 in range(T//dT-1,-1,-1):
-        t = t0*dT+tl.arange(0,dT)[:,None]
-
-        state = tl.load(s_+IND5(bi,hi,t0,i.trans(),i, H,T//dT,C,C)).to(tl.float32)
-
-        sw = tl.load(w_+IND4(bi,t,hi,i, T,H,C)).to(tl.float32)
-        sq = tl.load(q_+IND4(bi,t,hi,i, T,H,C)).to(tl.float32)
-        sk = tl.load(k_+IND4(bi,t,hi,i, T,H,C)).to(tl.float32)
-        sv = tl.load(v_+IND4(bi,t,hi,i, T,H,C)).to(tl.float32)
-        sa = tl.load(a_+IND4(bi,t,hi,i, T,H,C)).to(tl.float32)
-        sb = tl.load(b_+IND4(bi,t,hi,i, T,H,C)).to(tl.float32)
-        sdy = tl.load(dy_+IND4(bi,t,hi,i, T,H,C)).to(tl.float32)
-
-        dw_fac = -sw.exp()
-        w = dw_fac.exp()
-        fw = tl.reduce(w, 0, _prod, keep_dims=True)
-        incl_pref = tl.cumprod(w,axis=0)
-        non_incl_pref = incl_pref / w
-        inv_incl_pref = 1 / incl_pref
-
-        wq = sq * incl_pref
-        wa = sa * non_incl_pref
-        kwi = sk * inv_incl_pref
-        bwi = sb * inv_incl_pref
-
-        mask1 = (t > t.trans())
-        ab = tl_dot(prec, wa, bwi.trans()) * mask1
-        ak = tl_dot(prec, wa, kwi.trans()) * mask1
-
-        ab_inv = tri_minv(ab, dT, prec)
-
-        ab_u = tl_dot(prec, ak, sv) + tl_dot(prec, wa, state.trans())
-        u = tl_dot(prec, ab_inv, ab_u)
-        mask2 = (t >= t.trans())
-        qk = tl_dot(prec, wq, kwi.trans()) * mask2
-        qb = tl_dot(prec, wq, bwi.trans()) * mask2
-
-        du = tl_dot(prec, qb.trans(), sdy) + tl_dot(prec, bwi*fw, dstate.trans())
-        dab_u = tl_dot(prec, ab_inv.trans(), du)
-
-        dv = tl_dot(prec, qk.trans(), sdy) + tl_dot(prec, kwi*fw, dstate.trans()) + tl_dot(prec, ak.trans(), dab_u)
-        tl.store(dv_+IND4(bi,t,hi,i, T,H,C), dv.to(tl.bfloat16))
-
-        dab = tl_dot(prec, tl_dot(prec, ab_inv.trans(), du), u.trans()) * mask1
-        dak = tl_dot(prec, dab_u, sv.trans()) * mask1
-        dab_u_state = tl_dot(prec, dab_u, state)
-        da = non_incl_pref * (tl_dot(prec, dab, bwi) + tl_dot(prec, dak, kwi) + dab_u_state)
-        tl.store(da_+IND4(bi,t,hi,i, T,H,C), da.to(tl.bfloat16))
-
-        dqb = tl_dot(prec, sdy, u.trans()) * mask2
-        dqk = tl_dot(prec, sdy, sv.trans()) * mask2
-        dy_state = tl_dot(prec, sdy, state)
-        dq = incl_pref * (tl_dot(prec, dqb, bwi) + tl_dot(prec, dqk, kwi) + dy_state)
-        tl.store(dq_+IND4(bi,t,hi,i, T,H,C), dq.to(tl.bfloat16))
-
-        fw_u_dstate = fw * tl_dot(prec, u, dstate)
-        db = inv_incl_pref * (tl_dot(prec, dab.trans(), wa) + tl_dot(prec, dqb.trans(), wq) + fw_u_dstate)
-        tl.store(db_+IND4(bi,t,hi,i, T,H,C), db.to(tl.bfloat16))
-
-        fw_v_dstate = fw * tl_dot(prec, sv, dstate)
-        dk = inv_incl_pref * (tl_dot(prec, dak.trans(), wa) + tl_dot(prec, dqk.trans(), wq) + fw_v_dstate)
-        tl.store(dk_+IND4(bi,t,hi,i, T,H,C), dk.to(tl.bfloat16))
-
-        dw0 = fw * tl.sum(state*dstate, axis=0,keep_dims=True)
-        for k in range(t0*dT,t0*dT+dT):
-            lmask = (t<k).trans()
-            A = (tl_dot(prec, dab*lmask, bwi) + tl_dot(prec, dak*lmask, kwi)) * wa * (t>k)
-            A += (tl_dot(prec, dqb*lmask, bwi) + tl_dot(prec, dqk*lmask, kwi)) * wq * (t>=k)
-            A += (fw_v_dstate*kwi + fw_u_dstate*bwi) * (t<k)
-            A += dab_u_state*wa * (t>k) + dy_state*wq * (t>=k)
-            dw = tl.sum(A, axis=0,keep_dims=True) + dw0
-
-            wk = tl.load(w_+IND4(bi,k,hi,i, T,H,C)).to(tl.float32)
-            dw *= -wk.exp()
-            tl.store(dw_+IND4(bi,k,hi,i, T,H,C), dw.to(tl.bfloat16))
-
-        dstate = dstate * fw + tl_dot(prec, sdy.trans(), wq) + tl_dot(prec, dab_u.trans(), wa)
-    tl.store(ds0_+IND4(bi,hi,i.trans(),i, H,C,C), dstate.to(tl.bfloat16))
-
-
-class TritonRWKV7(th.autograd.Function):
-    @staticmethod
-    def forward(ctx, w,q,k,v,z,b,s0, dot_prec):
-        K = 16
-        B,T,H,C = w.shape
-        s0 = th.zeros(B,H,C,C, dtype=w.dtype,device=w.device) if s0 is None else s0
-        y = th.empty_like(v)
-        sT = th.empty_like(s0)
-        s = th.zeros(B,H,T//K,C,C, dtype=th.float32,device=w.device)
-        fw_attn_triton[(H,B)](w,q,k,v,z,b, s0,y,s,sT, B,T,H,C,K, dot_prec)
-        ctx.dot_prec = dot_prec
-        ctx.save_for_backward(w,q,k,v,z,b,s)
-        return y, sT
-    @staticmethod
-    def backward(ctx, dy, dsT):
-        K = 16
-        w,q,k,v,z,b,s = ctx.saved_tensors
-        B,T,H,C = w.shape
-        dw,dq,dk,dv,dz,db,ds0 = [th.empty_like(x) for x in [w,q,k,v,z,b,dsT]]
-        bw_attn_triton[(H,B)](w,q,k,v,z,b, dy,s,dsT, dw,dq,dk,dv,dz,db,ds0, B,T,H,C,K, ctx.dot_prec)
-        return dw,dq,dk,dv,dz,db,ds0,None
-
-@triton.jit
-def tl_dot(prec:tl.constexpr, a, b):
-    if prec == 'fp32':
-        return tl.dot(a.to(tl.float32),b.trans().to(tl.float32).trans(), allow_tf32=False)
-    elif prec == 'tf32':
-        return tl.dot(a.to(tl.float32),b.trans().to(tl.float32).trans(), allow_tf32=True)
-    elif prec == 'bf16':
-        return tl.dot(a.to(tl.bfloat16),b.trans().to(tl.bfloat16).trans(), allow_tf32=True)
-    else:
-        tl.static_assert(False)
-
-def RUN_CUDA_RWKV7g(r,w,k,v,a,b, HEAD_SIZE=64, dot_prec = 'fp32'):
+def RUN_RWKV7_INFCTX(r, k, v, w, a, b, s, HEAD_SIZE=64): # for State-tuning, infctx
     B,T,HC = w.shape
     C = HEAD_SIZE
     H = HC//C
+    w=-torch.exp(w)
     r,w,k,v,a,b = [i.view(B,T,H,C) for i in [r,w,k,v,a,b]]
-    s0 = th.zeros(B,H,C,C, dtype=th.bfloat16,device=w.device)
-    return TritonRWKV7.apply(w,r,k,v,a,b,s0,dot_prec)[0].view(B,T,HC)
-
-def RUN_RWKV7_STATE(r, k, v, w, a, b, s, HEAD_SIZE=64, dot_prec = 'fp32'):
-    B,T,HC = w.shape
-    C = HEAD_SIZE
-    H = HC//C
-    r,w,k,v,a,b = [i.view(B,T,H,C) for i in [r,w,k,v,a,b]]
-    s0 = s
-    return TritonRWKV7.apply(w,r,k,v,a,b,s0,dot_prec)[0].view(B,T,HC), None
+    o, state = chunk_rwkv7(r, w, k, v, a, b, scale=1.0, initial_state=s, output_final_state=True, head_first=False)
+    return o, state
 
 
 class RWKV_Tmix_x070(MyModule):
@@ -323,11 +121,17 @@ class RWKV_Tmix_x070(MyModule):
             # self.value.weight.data.uniform_(-0.5/(C**0.5), 0.5/(C**0.5))
             # self.output.weight.data.zero_()
 
-    @MyFunction
-    def forward(self, x, v_first):
+
+    def forward(self, x, v_first, last_state: TimeMixState):
         B, T, C = x.size()
         H = self.n_head
-        xx = self.time_shift(x) - x
+        #xx = self.time_shift(x) - x
+        
+        shift_state = last_state.shift_state
+        wkv_state = last_state.wkv_state.clone().contiguous() 
+
+        xx = torch.concat((shift_state.unsqueeze(1), x[:, :-1]), dim=1) - x
+
 
         xr = x + xx * self.x_r
         xw = x + xx * self.x_w
@@ -335,6 +139,10 @@ class RWKV_Tmix_x070(MyModule):
         xv = x + xx * self.x_v
         xa = x + xx * self.x_a
         xg = x + xx * self.x_g
+
+        #print(f'x shape = {x.shape}')
+
+        shift_state = x[:,-1,:]
 
         r = self.receptance(xr)
         w = -F.softplus(-(self.w0 + torch.tanh(xw @ self.w1) @ self.w2)) - 0.5 # soft-clamp to (-inf, -0.5)
@@ -351,13 +159,15 @@ class RWKV_Tmix_x070(MyModule):
         kk = F.normalize(kk.view(B,T,H,-1), dim=-1, p=2.0).view(B,T,C)
         k = k * (1 + (a-1) * self.k_a)
 
-        x = RUN_CUDA_RWKV7g(r, w, k, v, -kk, kk*a)
+        x , wkv_state = RUN_RWKV7_INFCTX(r,k,v,w,-kk, kk*a,wkv_state)
+
         x = self.ln_x(x.view(B * T, C)).view(B, T, C)
 
         x = x + ((r.view(B,T,H,-1)*k.view(B,T,H,-1)*self.r_k).sum(dim=-1, keepdim=True) * v.view(B,T,H,-1)).view(B,T,C)
         x = self.output(x * g)
-        return x, v_first
-    
+        
+        return x, v_first,TimeMixState(shift_state,wkv_state)
+
 
 class RWKV_CMix_x070(MyModule):
     def __init__(self, args, layer_id):
@@ -376,18 +186,15 @@ class RWKV_CMix_x070(MyModule):
         self.key = nn.Linear(args.n_embd, args.n_embd * 4, bias=False)
         self.value = nn.Linear(args.n_embd * 4, args.n_embd, bias=False)
 
-        # !!! initialize if you are using RWKV_Tmix_x070 in your code !!!
-        # self.key.weight.data.uniform_(-0.5/(args.n_embd**0.5), 0.5/(args.n_embd**0.5))
-        # self.value.weight.data.zero_()
-
-    @MyFunction
-    def forward(self, x):
-        xx = self.time_shift(x) - x
+    def forward(self, x,last_state: ChannelMixState):
+        #xx = self.time_shift(x) - x
+        xx = torch.concat((last_state.shift_state.unsqueeze(1), x[:, :0]), dim=1) - x
+        
         
         k = x + xx * self.x_k
         k = torch.relu(self.key(k)) ** 2
 
-        return self.value(k)
+        return self.value(k), ChannelMixState(x[:, -1])
     
 
 class Block(nn.Module):
@@ -409,36 +216,41 @@ class Block(nn.Module):
         if args.dropout > 0:
             self.drop0 = nn.Dropout(p = args.dropout)
             self.drop1 = nn.Dropout(p = args.dropout)
-
-    def forward(self, x, v_first):
+    
+    def forward(self, x, v_first, last_state: BlockState):
         if self.layer_id == 0:
             x = self.ln0(x)
 
-        # time mix
-        x_attn, v_first = self.att(self.ln1(x), v_first)
+        x_attn, v_first, att_state = self.att(self.ln1(x), v_first, last_state.time_mix_state)
         x = x + x_attn
 
-        # channel mix
-        ffn_attn = self.ffn(self.ln2(x))
-        x = x + ffn_attn
+        ffn_out ,ffn_state = self.ffn(self.ln2(x), last_state.channel_mix_state)
 
-        return x, v_first
+        x = x + ffn_out
+        return x, v_first, BlockState(att_state, ffn_state)
 
 class L2Wrap(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, loss, y):
+    def forward(ctx, loss, y, token_amount):
         ctx.save_for_backward(y)
+        ctx.token_amount = token_amount
         return loss
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, grad_output): #这个函数会不会影响batch和grad_accu的一致性？感觉上会。梯度累积时，factor变大了。但是只有loss缩放，这里的正则化项反而没有缩放
         y = ctx.saved_tensors[0]
         # to encourage the logits to be close to 0
-        factor = 1e-4 / (y.shape[0] * y.shape[1])
+        if ctx.token_amount == 0:
+            return (grad_output, None, None)
+        factor = 1e-4 / ctx.token_amount #这一行类似crossentropy在token上平均。
         maxx, ids = torch.max(y, -1, keepdim=True)
         gy = torch.zeros_like(y)
-        gy.scatter_(-1, ids, maxx * factor)
-        return (grad_output, gy)
+        if os.environ.get("WN_FIX_L2WRAP"): #实现batch等价性
+            # maxx[maxx<3.]=0. #防止对已经较小的logits值下拉，只对大于阈值的往下拉
+            gy.scatter_(-1, ids, maxx * factor * grad_output)
+        else:
+            gy.scatter_(-1, ids, maxx * factor)
+        return (grad_output, gy, None)
 
 
 class RWKV(nn.Module):
@@ -451,6 +263,7 @@ class RWKV(nn.Module):
         args.dropout = args_in.train.dropout
         args.grad_cp = 1
         args.lora_on = args_in.lora.lora_on
+        args.chunk_len  = args_in.model.chunk_len
         args.ctx_len = args_in.model.ctx_len
         args.head_size = args_in.model.head_size
         args.head_size_divisor = args_in.model.head_size_divisor
@@ -460,7 +273,6 @@ class RWKV(nn.Module):
         args.model = args_in.model
         args.weight_decay = args_in.train.weight_decay
         self.args = args
-        self.param_vfirst = None
 
         # 统一dtype处理
         dtype_map = {
@@ -560,8 +372,6 @@ class RWKV(nn.Module):
         lr_2x = sorted(list(lr_2x))
         lr_3x = sorted(list(lr_3x))
 
-
-
         param_dict = {n: p for n, p in self.named_parameters()}
         
         if args.layerwise_lr > 0:
@@ -605,43 +415,182 @@ class RWKV(nn.Module):
         return optimizer, lr_scheduler
 
 
-    def forward(self, idx: Union[torch.Tensor, list], v_first=None):
+    def inference_forward(self, idx, states: BlockStateList = None):
         args = self.args
-
-        # idx
-        # 修改输入张量创建方式
-        if isinstance(idx, list):
-            x = torch.tensor(idx, device=next(self.parameters()).device, dtype=torch.long)
-        else:
-            x = idx.to(device=next(self.parameters()).device, dtype=torch.long)
-
-        args = self.args
-
-        B, T = x.size()
+        B, T = idx.size()
+        assert T <= args.ctx_len, "Cannot forward, model ctx_len is exhausted."
         C = args.n_embd
-        H = args.dim_att // args.head_size
-
-        assert T <= self.args.ctx_len, "Cannot forward, model ctx_len is exhausted."
-        assert C == H * args.head_size
+        H =  args.dim_att // args.head_size
+        assert C==H*args.head_size
         
-        x = self.emb(x)
+        if states is None:
+            states = BlockStateList.create(args.n_layer, B, C, H, idx.device,self.emb.weight.dtype)
+        
+        states = states.to_cuda()
+        last_shift_states = states.shift_states
+        last_wkv_states = states.wkv_states
 
-        if args.dropout > 0:
-            x = self.drop0(x)
+        # 初始化new_states，作为输出
+        new_states = BlockStateList.empty(args.n_layer, B, args.n_embd, H, x.device, x.dtype)
+        
+        # 初始化v_first，作为残差
+        if states.v_first is None:
+            v_first = torch.empty_like(x)
+        else:
+            v_first = states.v_first.to(x.device, x.dtype)
 
+        # 初始化x,词嵌入
+        x = self.emb(idx)
+        
+        # 遍历blocks
+        for i, (block, block_state) in enumerate(zip(self.blocks, BlockStateList(last_shift_states, last_wkv_states))):
+            if args.grad_cp == 1 and i > 0:# and i < len(self.blocks)-1 :
+                x, v_first, new_block_state = torch_checkpoint(block, x, v_first, block_state, use_reentrant=False)
+            else:
+                x, v_first, new_block_state = block(x,v_first,block_state)
+
+            new_states[i] = new_block_state 
+
+        # 输出层
+        x = self.ln_out(x)    
+        x = self.head(x)
+
+        # 将new_states转换为cpu
+        new_states =  new_block_state.to_cpu()
+        new_states.set_vfirst(v_first.detach().clone())
+
+        return x, new_states
+
+    def forward_raw(self, idx, v_first, last_shift_states: torch.Tensor, last_wkv_states: torch.Tensor):
+        args = self.args
+        B, T = idx.size()
+        assert T <= args.ctx_len, "Cannot forward, model ctx_len is exhausted."
+        C = args.n_embd
+        H =  args.dim_att // args.head_size
+        assert C==H*args.head_size
+        
+        x = self.emb(idx)
+        # 检查并处理embedding输出的nan/inf
+        x = torch.nan_to_num(x, nan=0.0, posinf=1e6, neginf=-1e6)
+        
+        new_states = BlockStateList.empty(args.n_layer, B, args.n_embd, H,
+                                        x.device, x.dtype)
         if v_first is None:
             v_first = torch.empty_like(x)
-        v_first = v_first.to("cuda")
-
-        for block in self.blocks:
-            if args.grad_cp == 1:
-                x, v_first = deepspeed.checkpointing.checkpoint(block, x, v_first)
+        else:
+            v_first = v_first.to(x.device, x.dtype)
+            v_first = torch.nan_to_num(v_first, nan=0.0, posinf=1e6, neginf=-1e6)
+        
+        for i, (block, block_state) in enumerate(zip(self.blocks, BlockStateList(last_shift_states, last_wkv_states))):
+            if args.grad_cp == 1 and i > 0:# and i < len(self.blocks)-1 :
+                x, v_first, new_block_state = torch_checkpoint(block, x, v_first, block_state, use_reentrant=False)
             else:
-                x, v_first = block(x, v_first)
+                x, v_first, new_block_state = block(x,v_first,block_state)
 
+            # 每个block后检查并处理nan/inf
+            x = torch.nan_to_num(x, nan=0.0, posinf=1e6, neginf=-1e6)
+            v_first = torch.nan_to_num(v_first, nan=0.0, posinf=1e6, neginf=-1e6)
+            new_states[i] = new_block_state 
 
+        # 输出层前的LayerNorm
         x = self.ln_out(x)
-        logits = self.head(x)
-        # clean states
-        return logits, None
+        x = torch.nan_to_num(x, nan=0.0, posinf=1e6, neginf=-1e6)
+        
+        # 最终输出层
+        x = self.head(x)
+        
+        # 最终输出的处理
+        x = torch.nan_to_num(x, nan=0.0, posinf=1e6, neginf=-1e6)
+        # 对输出进行clip,避免过大或过小的值
+        x = torch.clamp(x, -100, 100)
+
+        return x, v_first, new_states.shift_states, new_states.wkv_states
+
+    def forward(self, idx, targets, states: BlockStateList = None):
+        args = self.args
+        T_train = args.chunk_len
+        # idx, targets = batch
+        B, T = idx.shape
+        C = args.n_embd   
+        H =  args.dim_att // args.head_size
+        assert C == H*args.head_size
+
+        # 初始化states
+        if states is None:
+            states = BlockStateList.create(args.n_layer, B, C, H, idx.device,self.emb.weight.dtype)
+
+        # 初始化v_first
+        if states.get_vfirst() is None:
+            v_first = torch.empty_like(idx)
+        else:
+            v_first = states.get_vfirst()
+        states.to_cuda()
+        # state初始化结束
+
+        # 定义checkpointed_step
+        def checkpointed_step(idx, targets, prev_loss, v_first, last_shift_states, last_wkv_states, prev_token_amount):
+            # print(f"idx.shape = {idx.shape}")
+            logits, v_first, new_shift_states, new_wkv_states = self.forward_raw(idx, v_first, last_shift_states, last_wkv_states)
+            
+            # 检查logits是否包含nan或inf
+            if torch.isnan(logits).any() or torch.isinf(logits).any():
+                print("Warning: NaN or Inf detected in logits")
+                # 将nan和inf替换为0
+                logits = torch.nan_to_num(logits, nan=0.0, posinf=0.0, neginf=0.0)
+            
+            current_token_amount = (targets!=-100).sum() #这样是不是更合适？
+            current_token_amount = idx.shape[1]
+            
+            # 添加数值稳定性的clip
+            logits = torch.clamp(logits, -100, 100)
+            
+            if current_token_amount == 0:
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.reshape(-1), reduction='sum')
+            else:
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.reshape(-1))
+                loss = L2Wrap.apply(loss, logits, current_token_amount)
+            
+            # 检查loss是否为nan
+            if torch.isnan(loss):
+                print("Warning: NaN detected in loss")
+                loss = torch.tensor(0.0, device=loss.device, dtype=loss.dtype)
+            
+            new_token_amount = prev_token_amount + current_token_amount
+            if new_token_amount > 0:
+                # 添加eps避免除0
+                eps = 1e-8
+                new_loss = prev_loss * (prev_token_amount / (new_token_amount + eps)) + loss * (
+                    current_token_amount / (new_token_amount + eps))
+            else:
+                new_loss = prev_loss
+                
+            # 最后再检查一次输出
+            if torch.isnan(new_loss):
+                print("Warning: NaN detected in final loss")
+                new_loss = torch.tensor(0.0, device=new_loss.device, dtype=new_loss.dtype)
+                
+            return new_loss, v_first, new_shift_states, new_wkv_states, new_token_amount
+        
+        total_loss = torch.tensor(0.,dtype=self.emb.weight.dtype).requires_grad_()
+        token_amount = 0
+        i = 0
+        for i in range(math.ceil(T / T_train)):
+            total_loss,v_first,new_shift_states, new_wkv_states,token_amount = torch_checkpoint(
+                checkpointed_step,
+                idx[:, i * T_train:(i + 1) * T_train],
+                targets[:, i * T_train:(i + 1) * T_train],
+                total_loss,
+                v_first,
+                states.shift_states,
+                states.wkv_states,
+                token_amount,
+                use_reentrant=False
+            )
+            states = BlockStateList(new_shift_states.clone().detach(), new_wkv_states.clone().detach())
+            print("total_loss====>", total_loss, token_amount)
+
+        states.set_vfirst(v_first.detach().clone())
+        return total_loss, states.to_cpu()
+
+
 

@@ -2,9 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import gc
-import deepspeed
-from deepspeed import DeepSpeedCPUAdam
-
 
 
 class HelperFunc:
@@ -56,8 +53,6 @@ class ModelFramework(nn.Module):
 
         # 加载model_weights
         self.apply_load_model(self, model_weights, self.dtype)
-        self.params_v_first =  None
-        self.params_states = None
 
     def apply_load_model(self, model_weights:dict, dtype:torch.dtype):
         # 加载model_weights
@@ -76,10 +71,7 @@ class ModelFramework(nn.Module):
         self.drop0 = nn.Dropout(p=dropout)
         return self
     
-    def get_optim_groups(self, 
-                         weight_decay:float=0.0, 
-                         layerwise_lr:float=0.0, 
-                         my_pile_stage:int=1):
+    def get_optim_groups(self, weight_decay:float=0.0, layerwise_lr:float=0.0, my_pile_stage:int=1):
         lr_decay = set()
         lr_1x = set()
         lr_2x = set()
@@ -121,49 +113,25 @@ class ModelFramework(nn.Module):
         if layerwise_lr > 0:
             if my_pile_stage == 2:
                 optim_groups = [
-                    {"params": [param_dict[n] for n in lr_1x], 
-                     "weight_decay": 0.0, 
-                     "my_lr_scale": 1.0},
-                    {"params": [param_dict[n] for n in lr_2x], 
-                     "weight_decay": 0.0, 
-                     "my_lr_scale": 5.0},
-                    {"params": [param_dict[n] for n in lr_3x], 
-                     "weight_decay": 0.0, 
-                     "my_lr_scale": 5.0},
+                    {"params": [param_dict[n] for n in lr_1x], "weight_decay": 0.0, "my_lr_scale": 1.0},
+                    {"params": [param_dict[n] for n in lr_2x], "weight_decay": 0.0, "my_lr_scale": 5.0},
+                    {"params": [param_dict[n] for n in lr_3x], "weight_decay": 0.0, "my_lr_scale": 5.0},
                 ]
             else:
                 optim_groups = [
-                    {"params": [param_dict[n] for n in lr_1x], 
-                     "weight_decay": 0.0, 
-                     "my_lr_scale": 1.0},
-                    {"params": [param_dict[n] for n in lr_2x], 
-                     "weight_decay": 0.0, 
-                     "my_lr_scale": 2.0},
-                    {"params": [param_dict[n] for n in lr_3x],
-                    "weight_decay": 0.0,
-                    "my_lr_scale": 3.0},
+                    {"params": [param_dict[n] for n in lr_1x], "weight_decay": 0.0, "my_lr_scale": 1.0},
+                    {"params": [param_dict[n] for n in lr_2x], "weight_decay": 0.0, "my_lr_scale": 2.0},
+                    {"params": [param_dict[n] for n in lr_3x], "weight_decay": 0.0, "my_lr_scale": 3.0},
                 ]
         else:
-            optim_groups = [{"params": [param_dict[n] for n in lr_1x], 
-                             "weight_decay": 0.0, 
-                             "my_lr_scale": 1.0}]
+            optim_groups = [{"params": [param_dict[n] for n in lr_1x], "weight_decay": 0.0, "my_lr_scale": 1.0}]
 
         if weight_decay > 0:
-            optim_groups += [{"params": [param_dict[n] for n in lr_decay], 
-                              "weight_decay": weight_decay, 
-                              "my_lr_scale": 1.0}]
+            optim_groups += [{"params": [param_dict[n] for n in lr_decay], "weight_decay": weight_decay, "my_lr_scale": 1.0}]
 
         return optim_groups
     
-    def get_optimizer(self, 
-                    optim_groups, 
-                    lr_init:float, 
-                    beta1:float, 
-                    beta2:float, 
-                    eps:float, 
-                    adamw_mode:bool, 
-                    weight_decay:float):
-        
+    def get_optimizer(self, optim_groups, lr_init:float, beta1:float, beta2:float, eps:float, adamw_mode:bool, weight_decay:float, warmup_min_lr:float, warmup_max_lr:float, warmup_num_steps:int, warmup_type:str):
         optimizer = DeepSpeedCPUAdam(
                 optim_groups,
                 lr=lr_init,
@@ -176,32 +144,6 @@ class ModelFramework(nn.Module):
             )
 
         return optimizer
-    
-    def get_lr_scheduler(self, 
-                        optimizer, 
-                        warmup_min_lr:float,
-                        warmup_max_lr:float, 
-                        warmup_num_steps:int, 
-                        warmup_type:str="linear"):
-        lr_scheduler = deepspeed.runtime.lr_schedules.WarmupLR(
-            optimizer,
-            warmup_min_lr=warmup_min_lr,
-            warmup_max_lr=warmup_max_lr,
-            warmup_num_steps=warmup_num_steps,
-            warmup_type=warmup_type,
-        )
-        return lr_scheduler
-
-
-    def get_v_first(self):
-        if self.params_v_first is None:
-            self.params_v_first = torch.empty_like(self.emb.weight)
-        return self.params_v_first
-    
-    def get_states(self):
-        if self.params_states is None:
-            self.params_states = BlockStateList.create(self.n_layer, self.B, self.C, self.H, self.device, self.dtype)
-        return self.params_states
 
 
     def forward(self, x):
