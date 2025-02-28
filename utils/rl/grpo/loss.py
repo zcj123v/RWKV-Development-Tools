@@ -49,6 +49,7 @@ class GRPOLoss(nn.Module):
         log_probs = get_batch_log_probs(
             rwkv=rwkv,
             t_batch_tokens=experience_hist.history_tokens,
+            begin_with_states=experience_hist.begin_with_states,
         )
 
         old_log_probs = experience_hist.action_log_probs

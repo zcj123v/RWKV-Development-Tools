@@ -3,6 +3,83 @@ import os
 import torch
 from .message_manager import Conversation, cList
 import json
+from collections import OrderedDict
+import shutil
+
+
+class LocalMemoryStatePool:
+    def __init__(self, pool_size=16, cache_dir="") -> None:
+        self.pool_size = pool_size
+        self.states = OrderedDict()
+        self.cache_dir = cache_dir
+        os.makedirs(self.cache_dir, exist_ok=True)
+
+    def __getitem__(self, key):
+        if key in self.states:
+            state_dir = self.states[key]
+            state = torch.load(state_dir)
+        elif os.path.exists(os.path.join(self.cache_dir, f"{key}.state")):
+            self.states[key] = os.path.join(self.cache_dir, f"{key}.state")
+            state = torch.load(self.states[key])
+        else:
+            state = None
+        return state
+
+    def get(self, key, device):
+        if key in self.states:
+            state_dir = self.states[key]
+            state = torch.load(state_dir, map_location=device)
+        elif os.path.exists(os.path.join(self.cache_dir, f"{key}.state")):
+            self.states[key] = os.path.join(self.cache_dir, f"{key}.state")
+            state = torch.load(self.states[key], map_location=device)
+        else:
+            state = None
+        return state
+
+    def __setitem__(self, key, value):
+        if value is None:
+            return
+        state_dir = os.path.join(self.cache_dir, f"{key}.state")
+        torch.save(value, state_dir)
+        self.states[key] = state_dir
+        if len(self.states) > self.pool_size:
+            _, state_dir = self.states.popitem(last=False)
+            if os.path.exists(state_dir):
+                os.remove(state_dir)
+
+    def __contains__(self, key):
+        return key in self.states
+
+    def clear(self):
+        for key in self.states:
+            if os.path.exists(self.states[key]):
+                os.remove(self.states[key])
+        self.states.clear()
+
+    def save(self, key, dir):
+        if key in self.states:
+            state_dir = self.states[key]
+        elif os.path.exists(os.path.join(self.cache_dir, f"{key}.state")):
+            state_dir = os.path.join(self.cache_dir, f"{key}.state")
+        else:
+            return  # 如果状态不存在，直接返回
+        shutil.copy(state_dir, os.path.join(dir))
+
+    def __delitem__(self, key):
+        if key in self.states:
+            state_dir = self.states[key]
+            if os.path.exists(state_dir):
+                os.remove(state_dir)
+            del self.states[key]
+
+    def keys(self):
+        return self.states.keys()
+
+    def values(self):
+        return [self.states[key] for key in self.states]
+
+    def items(self):
+        return self.states.items()
 
 
 class ChatbotStatesContainer:
@@ -108,15 +185,19 @@ class ChatbotMessagesContainer:
     @property
     def last_idx_history(self):
         return self.index_of(self.conversations_history, self.last_conversation)
-    
+
     @property
     def last_idx_train(self):
         return self.index_of(self.conversations_to_train, self.last_conversation)
 
     def back_to_last(self):
         if self.last_conversation:
-            self.conversations_history = self.conversations_history[:self.last_idx_history]
-            self.conversations_to_train = self.conversations_to_train[:self.last_idx_train]
+            self.conversations_history = self.conversations_history[
+                : self.last_idx_history
+            ]
+            self.conversations_to_train = self.conversations_to_train[
+                : self.last_idx_train
+            ]
         else:
             self.restart()
         self.last_token = (

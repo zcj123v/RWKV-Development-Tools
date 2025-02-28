@@ -55,9 +55,9 @@ def update_plot(data):
 class InferAgent:
     def __init__(
         self,
-        infer_server:str="http://0.0.0.0:4514",
-        init_sender:str="user",
-        init_replier:str="assistant",
+        infer_server: str = "http://0.0.0.0:4514",
+        init_sender: str = "user",
+        init_replier: str = "assistant",
     ):
         gc.collect()
         torch.cuda.empty_cache()
@@ -273,11 +273,11 @@ class InferAgent:
                     else "user"
                 ),
                 "content": conversation.content,
-                    "metadata": (
-                        {"title": "思考过程", "id": 0, "status": "pending"}
-                        if conversation.role == "think"
-                        else {}
-                    ),
+                "metadata": (
+                    {"title": "思考过程", "id": 0, "status": "pending"}
+                    if conversation.role == "think"
+                    else {}
+                ),
             }
             for conversation in (
                 self.chatbot.history.conversations_history[
@@ -345,11 +345,11 @@ class InferAgent:
                     else "user"
                 ),
                 "content": conversation.content,
-                    "metadata": (
-                        {"title": "思考过程", "id": 0, "status": "pending"}
-                        if conversation.role == "think"
-                        else {}
-                    ),
+                "metadata": (
+                    {"title": "思考过程", "id": 0, "status": "pending"}
+                    if conversation.role == "think"
+                    else {}
+                ),
             }
             for conversation in (self.chatbot.history.conversations_history)
         ]
@@ -394,11 +394,11 @@ class InferAgent:
                     else "user"
                 ),
                 "content": conversation.content,
-                    "metadata": (
-                        {"title": "思考过程", "id": 0, "status": "pending"}
-                        if conversation.role == "think"
-                        else {}
-                    ),
+                "metadata": (
+                    {"title": "思考过程", "id": 0, "status": "pending"}
+                    if conversation.role == "think"
+                    else {}
+                ),
             }
             for conversation in (self.chatbot.history.conversations_history)
         ]
@@ -436,11 +436,11 @@ class InferAgent:
                     else "user"
                 ),
                 "content": conversation.content,
-                    "metadata": (
-                        {"title": "思考过程", "id": 0, "status": "pending"}
-                        if conversation.role == "think"
-                        else {}
-                    ),
+                "metadata": (
+                    {"title": "思考过程", "id": 0, "status": "pending"}
+                    if conversation.role == "think"
+                    else {}
+                ),
             }
             for conversation in (self.chatbot.history.conversations_history)
         ]
@@ -454,16 +454,16 @@ class InferAgent:
         return "聊天记录已保存为数据集。"
 
     def save_as_rl_pairs(self):
-        """保存生成历史为强化学习生成组"""
+        """保存生成历史为强化学习组"""
         current_time = time.localtime()
         time_string = time.strftime(r"%Y-%m-%d-%H-%M-%S", current_time)
-        os.makedirs(global_config.save_dataset_dir, exist_ok=True)
+        os.makedirs(global_config.save_rl_dataset_dir, exist_ok=True)
         jsonl = os.path.join(
-            global_config.save_dataset_dir, f"{time_string}_pairs.jsonl"
+            global_config.save_rl_dataset_dir, f"{time_string}_pairs.jsonl"
         )
         with open(jsonl, "w", encoding="utf-8") as f:
             f.write(json.dumps(self.accumulate_logs, ensure_ascii=False))
-        return "生成历史已保存为强化学习生成组。"
+        return "生成历史已保存为强化学习组。"
 
     def load_infer_weight(self, load_dir):
         """加载模型权重"""

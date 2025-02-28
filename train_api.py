@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from utils.train_app import OnlineTrainingAPP
 import json
 from utils.dataset.gsm8k_dataset import GSM8KRLDataset
+from utils.dataset.dataset import RLGroupDataset, RLPairDataset
 
 app = OnlineTrainingAPP()
 rank = dist.get_rank()
@@ -202,9 +203,9 @@ def train_text_from_messages():
 
 @route("/train_gsm8k", method="POST")
 def train_gsm8k():
+    req = dict(request.json)
     if rank == 0 and total_ranks > 1:
         asyncio.run(distribute_package(req, "train_gsm8k"))
-    req = dict(request.json)
     parquet_file_path = req.get("parquet_file_path")
     ref_model_server = req.get(
         "ref_model_server",
@@ -227,7 +228,7 @@ def train_gsm8k():
         tokenizer=tokenizer,
     )
     n_epoch = req.get("n_epoch", 1)
-    batch_size_per_gpu = req.get("batch_size_per_gpu", 1)
+    n_rollout_questions = req.get("n_rollout_questions", 1)
     temperature = req.get("temperature", 1)
     top_p = req.get("top_p", 0.85)
     alpha_frequency = req.get("alpha_frequency", 0.2)
@@ -264,7 +265,7 @@ def train_gsm8k():
         reward_func=rl_dataset.reward_func,
         rlhf_func=lambda *args: args,
         n_epoch=n_epoch,
-        batch_size_per_gpu=batch_size_per_gpu,
+        n_rollout_questions=n_rollout_questions,
         temperature=temperature,
         top_p=top_p,
         alpha_frequency=alpha_frequency,
@@ -279,6 +280,126 @@ def train_gsm8k():
         lr_final=lr_final,
         warmup_steps=warmup_steps,
         n_save_ckpt=n_save_ckpt,
+        n_save_episode_ckpt=n_save_episode_ckpt,
+        n_replay_sliding_window=n_replay_sliding_window,
+        clear_replay_on_episode=clear_replay_on_episode,
+        n_train_each_episode=n_train_each_episode,
+        train_batch_size=train_batch_size,
+        clip_eps=clip_eps,
+        kl_weight=kl_weight,
+        grad_cp_max_norm=grad_cp_max_norm,
+        accumulate_grad=accumulate_grad,
+    )
+
+
+@route("/train_grpo_from_group_dataset", method="POST")
+def train_grpo_from_group_dataset():
+    req = dict(request.json)
+    if rank == 0 and total_ranks > 1:
+        asyncio.run(distribute_package(req, "train_grpo_from_group_dataset"))
+    dataset_dir = req.get("dataset_dir", "")
+    tokenizer = global_config.tokenizer_train
+    dataset = RLGroupDataset(dataset_dir, tokenizer, None)
+    ref_model_server = req.get(
+        "ref_model_server",
+        f"http://{global_config.server_config.infer.host}:{global_config.server_config.infer.port}",
+    )
+    lr_init = req.get("lr_init", grpo_config.lr_init)
+    lr_final = req.get("lr_final", grpo_config.lr_final)
+    warmup_steps = req.get("warmup_steps", grpo_config.warmup_steps)
+    n_save_episode_ckpt = req.get("n_save_episode_ckpt", 1)
+    n_replay_sliding_window = req.get(
+        "n_replay_sliding_window", grpo_config.n_replay_sliding_window
+    )
+    clear_replay_on_episode = req.get(
+        "clear_replay_on_episode", grpo_config.clear_replay_on_episode
+    )
+    n_train_each_episode = req.get(
+        "n_train_each_episode", grpo_config.n_train_each_episode
+    )
+    train_batch_size = req.get("train_batch_size", grpo_config.train_batch_size)
+    clip_eps = req.get("clip_eps", grpo_config.clip_eps)
+    kl_weight = req.get("kl_weight", grpo_config.kl_weight)
+    grad_cp_max_norm = req.get("grad_cp_max_norm", grpo_config.grad_cp_max_norm)
+    accumulate_grad = req.get("accumulate_grad", grpo_config.accumulate_grad)
+    response.content_type = "application/json"
+
+    return app.train_grpo_from_group_dataset(
+        group_dataset=dataset,
+        ref_model_server=ref_model_server,
+        lr_init=lr_init,
+        lr_final=lr_final,
+        warmup_steps=warmup_steps,
+        n_save_episode_ckpt=n_save_episode_ckpt,
+        n_replay_sliding_window=n_replay_sliding_window,
+        clear_replay_on_episode=clear_replay_on_episode,
+        n_train_each_episode=n_train_each_episode,
+        train_batch_size=train_batch_size,
+        clip_eps=clip_eps,
+        kl_weight=kl_weight,
+        grad_cp_max_norm=grad_cp_max_norm,
+        accumulate_grad=accumulate_grad,
+    )
+
+
+@route("/train_grpo_from_pair_dataset", method="POST")
+def train_grpo_from_pair_dataset():
+    req = dict(request.json)
+    if rank == 0 and total_ranks > 1:
+        asyncio.run(distribute_package(req, "train_grpo_from_pair_dataset"))
+
+    dataset_fp = req.get("dataset_fp")
+    tokenizer = global_config.tokenizer_train
+    n_samples_episode = req.get("n_samples_episode", 5)
+    n_episodes = req.get("n_episodes", 5)
+    role_system = req.get("role_system", "system")
+    system_prefix = req.get("system_prefix", "system")
+    role_sender = req.get("role_sender", "conversation")
+    sender_prefix = req.get("sender_prefix", "Q")
+    role_receiver = req.get("role_receiver", "response")
+    receiver_prefix = req.get("receiver_prefix", "A")
+    dataset = RLPairDataset(
+        dataset_fp=dataset_fp,
+        tokenizer=tokenizer,
+        n_samples_episode=n_samples_episode,
+        n_episodes=n_episodes,
+        role_system=role_system,
+        system_prefix=system_prefix,
+        role_sender=role_sender,
+        sender_prefix=sender_prefix,
+        role_replier=role_receiver,
+        replier_prefix=receiver_prefix,
+    )
+    ref_model_server = req.get(
+        "ref_model_server",
+        f"http://{global_config.server_config.infer.host}:{global_config.server_config.infer.port}",
+    )
+    lr_init = req.get("lr_init", grpo_config.lr_init)
+    lr_final = req.get("lr_final", grpo_config.lr_final)
+    warmup_steps = req.get("warmup_steps", grpo_config.warmup_steps)
+    n_save_episode_ckpt = req.get("n_save_episode_ckpt", 1)
+    n_replay_sliding_window = req.get(
+        "n_replay_sliding_window", grpo_config.n_replay_sliding_window
+    )
+    clear_replay_on_episode = req.get(
+        "clear_replay_on_episode", grpo_config.clear_replay_on_episode
+    )
+    n_train_each_episode = req.get(
+        "n_train_each_episode", grpo_config.n_train_each_episode
+    )
+    train_batch_size = req.get("train_batch_size", grpo_config.train_batch_size)
+    clip_eps = req.get("clip_eps", grpo_config.clip_eps)
+    kl_weight = req.get("kl_weight", grpo_config.kl_weight)
+    grad_cp_max_norm = req.get("grad_cp_max_norm", grpo_config.grad_cp_max_norm)
+    accumulate_grad = req.get("accumulate_grad", grpo_config.accumulate_grad)
+    response.content_type = "application/json"
+
+    return app.train_grpo_from_group_dataset(
+        group_dataset=dataset,
+        ref_model_server=ref_model_server,
+        lr_init=lr_init,
+        lr_final=lr_final,
+        warmup_steps=warmup_steps,
         n_save_episode_ckpt=n_save_episode_ckpt,
         n_replay_sliding_window=n_replay_sliding_window,
         clear_replay_on_episode=clear_replay_on_episode,

@@ -22,6 +22,9 @@ from RWKV.functions import (
     speak_next_token,
     calc_cross_entropy_loss,
 )
+from utils.rl.grpo.functions import (
+    zero_pad_sequences,
+)
 from RWKV.multimodal_functions import (
     voice_encode_and_adapt,
 )
@@ -44,9 +47,7 @@ from utils.dataset.dataset_functions import (
 )
 from utils.rl.grpo.train import GRPOTrainer
 from utils.rl.grpo.replay import ReplaySlidingWindow, ExperienceHist
-from utils.rl.grpo.functions import (
-    get_batch_log_probs,
-)
+from utils.rl.grpo.functions import get_batch_log_probs, group_advantages
 from utils.rl.grpo.loss import GRPOLoss, kl_div
 from torch.nn.utils import clip_grad_norm_
 
@@ -872,7 +873,7 @@ class OnlineTrainingAPP:
         reward_func: callable,
         rlhf_func: callable,
         n_epoch: int = 1,
-        batch_size_per_gpu: int = 1,
+        n_rollout_questions: int = 1,
         temperature: float = 1,
         top_p: float = 0.85,
         alpha_frequency: float = 0.2,
@@ -907,7 +908,7 @@ class OnlineTrainingAPP:
 
         dataloader = DataLoader(
             rl_dataset,
-            batch_size=batch_size_per_gpu,
+            batch_size=n_rollout_questions,
             shuffle=True,
             collate_fn=rl_collate_fn,
         )
@@ -948,6 +949,7 @@ class OnlineTrainingAPP:
                 self.model_engine.train()
 
                 print(f"episode {episode}: sum reward->{episode_reward_sum}")
+                print("======================================================")
                 for step in range(n_train_each_episode):
                     for exp in experience_sampler:
                         exp: ExperienceHist
@@ -972,7 +974,6 @@ class OnlineTrainingAPP:
                                     exp.advantages[rb : rb + 1],
                                     exp.action_mask[rb : rb + 1],
                                 )
-                                _kl = exp.kl if exp.kl is not None else None
                                 train_hist = ExperienceHist(
                                     history_tokens=history_tokens,
                                     action_log_probs=action_log_probs,
@@ -980,7 +981,6 @@ class OnlineTrainingAPP:
                                     rewards=rewards,
                                     advantages=advantages,
                                     action_mask=action_mask,
-                                    kl=_kl,
                                 )
                                 train_hist = train_hist.to(
                                     device=next(self.model_engine.parameters()).device
@@ -1082,6 +1082,287 @@ class OnlineTrainingAPP:
             if epoch % n_save_ckpt == 0 and self.rank == 0:
                 svpath = self.save_weight(
                     f"train_grpo_epoch={epoch}", save_train_state=True
+                )
+                yield (
+                    json.dumps(
+                        {
+                            "over": False,
+                            "to_dir": svpath,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+
+    def train_grpo_from_group_dataset(
+        self,
+        group_dataset: Dataset,
+        ref_model_server: str,
+        lr_init: float = None,
+        lr_final: float = None,
+        warmup_steps: int = None,
+        n_save_episode_ckpt: int = 5,
+        n_replay_sliding_window: int = 0,
+        clear_replay_on_episode: bool = True,
+        n_train_each_episode: int = 1,
+        train_batch_size: int = 1,
+        clip_eps: float = 0.2,
+        kl_weight: float = 0.01,
+        grad_cp_max_norm: float = 1.0,
+        accumulate_grad: bool = True,
+        continuous_history: bool = False,
+    ):
+        self.model_engine.train()
+        grpo_trainer = GRPOTrainer(
+            self.model_engine, ref_model_server, tokenizer=self.train_tokenizer
+        )
+        grpo_loss = GRPOLoss(clip_eps=clip_eps, kl_weight=kl_weight)
+        if lr_init:
+            self.build_engine(lr_init, lr_final, warmup_steps)
+        replay_buffer = ReplaySlidingWindow(n_replay_sliding_window)
+
+        for i_file, datas in enumerate(group_dataset):
+            for episode, lines in enumerate(datas):
+                reward_list = []
+                if clear_replay_on_episode:
+                    replay_buffer.clear()
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                update_units_list = []
+                now_state = None
+                grpo_trainer.request_state_idx()
+                with torch.no_grad():
+                    for t, turn in enumerate(lines):
+                        if t > 0 and continuous_history:
+                            _, now_state = self.model_engine(
+                                update_units_list[t - 1 : t], now_state
+                            )
+                            grpo_trainer.update_ref_state(
+                                update_units_list[t - 1 : t],
+                                [grpo_trainer.state_idx],
+                                grpo_trainer.state_idx,
+                            )
+                        turn_units = []
+                        turn_masks = []
+                        turn_rewards = []
+                        for n, choice_dict in enumerate(turn):
+                            choice_units = choice_dict["units"]
+                            choice_masks = choice_dict["masks"]
+                            choice_score = choice_dict["score"]
+
+                            turn_units.append(
+                                torch.tensor(
+                                    choice_units,
+                                    device=next(self.model_engine.parameters()).device,
+                                    dtype=torch.long,
+                                )
+                            )
+                            turn_masks.append(
+                                torch.tensor(
+                                    choice_masks,
+                                    device=next(self.model_engine.parameters()).device,
+                                    dtype=torch.bool,
+                                )
+                            )
+                            if choice_score is None:
+                                choice_score = int(choice_dict["is_best"]) * 2 - 1
+                            turn_rewards.append(choice_score)
+
+                            if n == len(turn) - 1:
+                                update_units_list.append(choice_units)
+                            
+
+                        bsz = len(turn_units)
+
+                        if bsz < 2:
+                            print(f"第{t}轮replay的对比回复个数小于2，跳过采集。")
+                            continue
+
+                        turn_units = zero_pad_sequences(turn_units)
+                        turn_masks = zero_pad_sequences(turn_masks)
+                        turn_rewards = torch.tensor(
+                            turn_rewards, device="cpu", dtype=torch.float
+                        ).unsqueeze(1)
+                        turn_masks = turn_masks[:, 1:]
+                        reward_list.append(turn_rewards)
+                        turn_advantages = group_advantages(turn_rewards)
+                        begin_with_states = (
+                            now_state.duplicate(turn_units.shape[0])
+                            if now_state is not None
+                            else None
+                        )
+                        log_probs = get_batch_log_probs(
+                            rwkv=self.model_engine,
+                            t_batch_tokens=turn_units,
+                            begin_with_states=begin_with_states,
+                        )
+                        log_probs_ref = grpo_trainer.get_log_probs_ref(
+                            turn_units,
+                            state_idx_list=[grpo_trainer.state_idx]
+                            * turn_units.shape[0],
+                        )
+
+                        kl = kl_div(log_probs, log_probs_ref, turn_masks)
+
+                        exp = ExperienceHist(
+                            history_tokens=turn_units.cpu(),
+                            action_log_probs=log_probs.cpu(),
+                            log_probs_ref=log_probs_ref.cpu(),
+                            rewards=turn_rewards.cpu(),
+                            advantages=turn_advantages.cpu(),
+                            action_mask=turn_masks.cpu(),
+                            kl=kl if kl is None else kl.cpu(),
+                            begin_with_states=(
+                                begin_with_states.cpu()
+                                if begin_with_states is not None
+                                else None
+                            ),
+                        )
+                        replay_buffer.add(exp)
+
+                        gc.collect()
+                        torch.cuda.empty_cache()
+
+                # 训练
+                del now_state
+                gc.collect()
+                torch.cuda.empty_cache()
+                episode_reward_sum = (
+                    torch.sum(torch.cat(reward_list,dim=0)) if reward_list else 0
+                )
+                experience_sampler = DataLoader(
+                    replay_buffer,
+                    batch_size=train_batch_size,
+                    shuffle=False,
+                    drop_last=False,
+                    collate_fn=ExperienceHist.gather,
+                )
+
+                for step in range(n_train_each_episode):
+                    for tt, exp in enumerate(experience_sampler):
+                        exp: ExperienceHist
+
+                        if accumulate_grad:
+                            is_fault = False
+                            loss = 0
+                            kl = 0
+                            self.model_engine.zero_grad()
+                            bsz = exp.history_tokens.size(0)
+                            for rb in range(bsz):
+                                (
+                                    history_tokens,
+                                    action_log_probs,
+                                    log_probs_ref,
+                                    rewards,
+                                    advantages,
+                                    action_mask,
+                                    begin_with_states,
+                                ) = (
+                                    exp.history_tokens[rb : rb + 1],
+                                    exp.action_log_probs[rb : rb + 1],
+                                    exp.log_probs_ref[rb : rb + 1],
+                                    exp.rewards[rb : rb + 1],
+                                    exp.advantages[rb : rb + 1],
+                                    exp.action_mask[rb : rb + 1],
+                                    exp.begin_with_states.batchof(rb) if exp.begin_with_states is not None else None,
+                                )
+                                _kl = exp.kl if exp.kl is not None else None
+                                train_hist = ExperienceHist(
+                                    history_tokens=history_tokens,
+                                    action_log_probs=action_log_probs,
+                                    log_probs_ref=log_probs_ref,
+                                    rewards=rewards,
+                                    advantages=advantages,
+                                    action_mask=action_mask,
+                                    kl=_kl,
+                                    begin_with_states=begin_with_states,
+                                )
+                                train_hist = train_hist.to(
+                                    device=next(self.model_engine.parameters()).device
+                                )
+                                step_loss, step_kl = grpo_loss(
+                                    rwkv=self.model_engine,
+                                    experience_hist=train_hist,
+                                )
+                                loss += step_loss
+                                kl += step_kl
+                                if not step_loss.isfinite():
+                                    print(
+                                        f"WARNING: loss is infinite, skip this batch, loss={loss}"
+                                    )
+                                    is_fault = True
+                                    break
+                                self.model_engine.backward(
+                                    step_loss / bsz,
+                                    retain_graph=(True if rb < bsz - 1 else False),
+                                )
+                                print(f"batch: {rb} loss: {step_loss}")
+                                train_hist = train_hist.to("cpu")
+                                del train_hist
+                                gc.collect()
+                                torch.cuda.empty_cache()
+
+                            if is_fault:
+                                del train_hist
+                                self.model_engine.zero_grad()
+                                gc.collect()
+                                torch.cuda.empty_cache()
+                                continue
+                            loss = loss / bsz
+                            kl = kl / bsz
+                            grad_norm = clip_grad_norm_(
+                                self.model_engine.parameters(),
+                                max_norm=grad_cp_max_norm,
+                            )
+                            self.model_engine.step()
+                        else:
+                            exp = exp.to(next(self.model_engine.parameters()).device)
+
+                            loss, kl = grpo_loss(
+                                self.model_engine,
+                                exp,
+                            )
+                            if not loss.isfinite():
+                                print(
+                                    f"Warning: Loss not finite, skipping backward, loss={loss}"
+                                )
+                                continue
+
+                            self.model_engine.zero_grad()
+                            self.model_engine.backward(loss)
+                            grad_norm = clip_grad_norm_(
+                                self.model_engine.parameters(),
+                                max_norm=grad_cp_max_norm,
+                            )
+
+                            print(
+                                f"rl step={step}: loss={loss}, advantage={exp.advantages}"
+                            )
+                            print(
+                                f"rl step={step}: kl={kl: .4f}, grad_norm={grad_norm.item()}"
+                            )
+                            self.model_engine.step()
+                            exp = exp.to("cpu")
+                            del exp
+                        gc.collect()
+                        torch.cuda.empty_cache()
+                        yield (
+                            json.dumps(
+                                {
+                                    "i_file": i_file,
+                                    "step": step,
+                                    "loss": loss.item(),
+                                    "kl": kl.item(),
+                                    "sum_rewards": episode_reward_sum.item(),
+                                    "grad_norm": grad_norm.item(),
+                                },
+                                ensure_ascii=False,
+                            )
+                            + "\n"
+                        )
+            if episode % n_save_episode_ckpt == 0 and self.rank == 0:
+                svpath = self.save_weight(
+                    f"train_grpo_episode={episode}", save_train_state=True
                 )
                 yield (
                     json.dumps(

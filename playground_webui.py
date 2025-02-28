@@ -8,7 +8,7 @@ infer_config = global_config.infer_service_config
 import gradio as gr
 from utils.webui.webui_infer import InferAgent, update_plot
 from utils.webui.webui_labeling import create_labeling_tab
-from utils.webui.webui_train import TrainAgent, grpo_router
+from utils.webui.webui_train import TrainAgent
 from utils.webui.webui_api import (
     api_base_input_list,
     api_key_input_list,
@@ -1140,14 +1140,16 @@ with gr.Blocks() as demo:
             with gr.Column(visible=False) as rl_section:
                 with gr.Row():
                     rl_type_selector = gr.Dropdown(
-                        ["gsm8k", ""], label="数据集类型", value="gsm8k"
+                        ["gsm8k", "ourborous", "dpo_pair"],
+                        label="数据集类型",
+                        value="gsm8k",
                     )
                 with gr.Column() as gsm8k_section:
-                    parquet_file_path_input = gr.Textbox(
-                        label="Parquet数据集路径", placeholder="Parquet数据集路径"
+                    gsm8k_parquet_file_path_input = gr.Textbox(
+                        label="Parquet数据集路径", placeholder="xxx.parquet"
                     )
                     with gr.Row():
-                        grpo_req_sp_token_dropdown = gr.Dropdown(
+                        gsm8k_req_sp_token_dropdown = gr.Dropdown(
                             label="用户 sp tokens",
                             choices=[
                                 "conversation",
@@ -1156,10 +1158,10 @@ with gr.Blocks() as demo:
                             ],
                             value="conversation",
                         )
-                        grpo_req_prefix_input = gr.Textbox(
-                            label="用户前缀", placeholder="用户前缀", value="user: "
+                        gsm8k_req_prefix_input = gr.Textbox(
+                            label="用户前缀", placeholder="用户前缀（称呼）", value="user"
                         )
-                        grpo_resp_sp_token_dropdown = gr.Dropdown(
+                        gsm8k_resp_sp_token_dropdown = gr.Dropdown(
                             label="回复 sp tokens",
                             choices=[
                                 "text",
@@ -1168,63 +1170,136 @@ with gr.Blocks() as demo:
                             ],
                             value="response",
                         )
-                        grpo_resp_prefix_input = gr.Textbox(
-                            label="bot前缀", placeholder="bot前缀", value="assistant: "
+                        gsm8k_resp_prefix_input = gr.Textbox(
+                            label="bot前缀", placeholder="bot前缀（称呼）", value="assistant"
                         )
-                        grpo_n_save_ckpt_input = gr.Number(
+                        gsm8k_n_save_ckpt_input = gr.Number(
                             label="保存检查点频率 (epoch)", value=1, interactive=True
                         )
                     with gr.Row():
-                        grpo_max_resp_ctx_len_input = gr.Number(
+                        gsm8k_max_resp_ctx_len_input = gr.Number(
                             label="最大回复长度", value=1024
                         )
-                        grpo_tiny_batch_size_input = gr.Number(
+                        gsm8k_tiny_batch_size_input = gr.Number(
                             label="推理子批量大小", value=1, interactive=True
                         )
-                        grpo_num_rollouts_input = gr.Number(
-                            label="每个问题采样个数", value=10
+                        gsm8k_num_rollouts_input = gr.Number(
+                            label="每个问题采样次数", value=10
                         )
-                        grpo_train_batch_size_input = gr.Number(
+                        gsm8k_train_batch_size_input = gr.Number(
                             label="训练批量大小", value=1, interactive=True
                         )
-                        grpo_n_save_episode_input = gr.Number(
+                        gsm8k_n_save_episode_input = gr.Number(
                             label="保存检查点频率 (episode)", value=5, interactive=True
                         )
                     with gr.Row():
-                        grpo_lr_init_input = gr.Number(
-                            label="初始学习率", value=5e-6, interactive=True
+                        gsm8k_n_rollout_questions_input = gr.Number(
+                            label="每轮采样问题个数", value=6
                         )
-                        grpo_lr_final_input = gr.Number(
-                            label="最终学习率", value=5e-6, interactive=True
-                        )
-                        grpo_lr_warmup_input = gr.Number(
-                            label="学习率预热步数", value=100, interactive=True
-                        )
-                        grpo_accumulate_grad =gr.Checkbox(
-                            label="使用梯度累积", value=True, interactive=True
-                        )
-                    with gr.Row():
-                        grpo_temperature_input = gr.Number(
+                        gsm8k_temperature_input = gr.Number(
                             label="温度", value=1.0, interactive=True
                         )
-                        grpo_top_p_input = gr.Number(
+                        gsm8k_top_p_input = gr.Number(
                             label="Top P", value=0.85, interactive=True
                         )
-                        grpo_presence_penalty_input = gr.Number(
+                        gsm8k_presence_penalty_input = gr.Number(
                             label="历史惩罚", value=0.2, interactive=True
                         )
-                        grpo_frequency_penalty_input = gr.Number(
+                        gsm8k_frequency_penalty_input = gr.Number(
                             label="频率惩罚", value=0.2, interactive=True
                         )
-                        grpo_penalty_decay_input = gr.Number(
+                        gsm8k_penalty_decay_input = gr.Number(
                             label="惩罚衰减", value=0.9961, interactive=True
                         )
-                    with gr.Row():
-                        grpo_run_btn = gr.Button("开始训练")
-                    with gr.Row():
-                        grpo_reward_curve_plot = gr.Plot(label="Reward曲线")
-                        grpo_kl_curve_plot = gr.Plot(label="KL曲线")
 
+                with gr.Column(visible=False) as ourborous_section:
+                    with gr.Row():
+                        grpo_ourborous_dataset_input = gr.Textbox(
+                            label="Ourborous数据集路径", placeholder="Ourborous RL数据文件夹"
+                        )
+                        grpo_ourborous_n_save_episode_ckpt_input = gr.Number(
+                            label="保存检查点频率 (episode)", value=5, interactive=True
+                        )
+                        grpo_ourborous_train_batch_size_input = gr.Number(
+                            label="训练批量大小", value=1, interactive=True
+                        )
+                        
+                with gr.Column(visible=False) as dpo_pair_section:
+                    with gr.Row():
+                        grpo_dpo_pair_dataset_input = gr.Textbox(
+                            label="DPO数据集路径", placeholder="xxx.parquet/xxx.jsonl"
+                        )
+                        grpo_dpo_pair_n_samples_episode = gr.Number(
+                            label="每轮收集样本数", value=5, interactive=True
+                        )
+                        grpo_dpo_pair_n_episodes = gr.Number(
+                            label="训练轮数", value=5, interactive=True
+                        )
+                    with gr.Row():
+                        grpo_dpo_pair_system_sp_token_dropdown = gr.Dropdown(
+                            label="system sp tokens",
+                            choices=[
+                                "system",
+                                "text_req",
+                                "rwkv_legacy_eos",
+                            ],
+                            value="system",
+                        )
+                        grpo_dpo_pair_system_prefix_input = gr.Textbox(
+                            label="system前缀", placeholder="system前缀（称呼）", value="system"
+                        )
+                        grpo_dpo_pair_req_sp_token_dropdown = gr.Dropdown(
+                            label="用户 sp tokens",
+                            choices=[
+                                "conversation",
+                                "text_req",
+                                "rwkv_legacy_eos",
+                            ],
+                            value="conversation",
+                        )
+                        grpo_dpo_pair_req_prefix_input = gr.Textbox(
+                            label="用户前缀", placeholder="用户前缀（称呼）", value="user"
+                        )
+                        grpo_dpo_pair_resp_sp_token_dropdown = gr.Dropdown(
+                            label="回复 sp tokens",
+                            choices=[
+                                "text",
+                                "response",
+                                "rwkv_legacy_eos_resp",
+                            ],
+                            value="response",
+                        )
+                        grpo_dpo_pair_resp_prefix_input = gr.Textbox(
+                            label="bot前缀", placeholder="bot前缀（称呼）", value="assistant"
+                        )
+                    with gr.Row():
+                        grpo_dpo_pair_n_save_episode_ckpt_input = gr.Number(
+                            label="保存检查点频率 (episode)", value=5, interactive=True
+                        )
+                        grpo_dpo_pair_train_batch_size_input = gr.Number(
+                            label="训练批量大小", value=1, interactive=True
+                        )
+                        
+                with gr.Row():
+                    grpo_lr_init_input = gr.Number(
+                        label="初始学习率", value=5e-6, interactive=True
+                    )
+                    grpo_lr_final_input = gr.Number(
+                        label="最终学习率", value=5e-6, interactive=True
+                    )
+                    grpo_lr_warmup_input = gr.Number(
+                        label="学习率预热步数", value=100, interactive=True
+                    )
+                    grpo_accumulate_grad = gr.Checkbox(
+                        label="使用梯度累积", value=True, interactive=True
+                    )
+                with gr.Row():
+                    grpo_gsm8k_run_btn = gr.Button("开始训练",visible=True)
+                    grpo_ourborous_run_btn = gr.Button("开始训练",visible=False)
+                    grpo_dpo_pair_run_btn = gr.Button("开始训练",visible=False)
+                with gr.Row():
+                    grpo_reward_curve_plot = gr.Plot(label="Reward曲线")
+                    grpo_kl_curve_plot = gr.Plot(label="KL曲线")
             # 处理模式切换的函数
             def switch_mode_train(choice):
                 if choice == "单文件夹数据训练":
@@ -1245,12 +1320,43 @@ with gr.Blocks() as demo:
                         gr.Column(visible=False),
                         gr.Column(visible=True),
                     )
+                    
+                    
+            def switch_mode_rl(choice):
+                if choice == "gsm8k":
+                    return (
+                        gr.Column(visible=True),
+                        gr.Column(visible=False),
+                        gr.Column(visible=False),
+                    )
+                elif choice == "ourborous":
+                    return (
+                        gr.Column(visible=False),
+                        gr.Column(visible=True),
+                        gr.Column(visible=False),
+                    )
+                elif choice == "dpo_pair":
+                    return (
+                        gr.Column(visible=False),
+                        gr.Column(visible=False),
+                        gr.Column(visible=True),
+                    )
 
             # 绑定模式切换事件
             train_mode_selector.change(
                 fn=switch_mode_train,
                 inputs=train_mode_selector,
                 outputs=[online_learning_section, folder_learning_section, rl_section],
+            )
+            rl_type_selector.change(
+                fn=switch_mode_rl,
+                inputs=rl_type_selector,
+                outputs=[gsm8k_section, ourborous_section, dpo_pair_section],
+            )
+            rl_type_selector.change(
+                fn=switch_mode_rl,
+                inputs=rl_type_selector,
+                outputs=[grpo_gsm8k_run_btn, grpo_ourborous_run_btn, grpo_dpo_pair_run_btn],
             )
 
             with gr.Row():
@@ -1307,29 +1413,30 @@ with gr.Blocks() as demo:
                 fllr_n_save_ckpt_step_input,
             )
 
-            grpo_run_btn.click(
-                partial(grpo_router,train_agent, "gsm8k"),
+            grpo_gsm8k_run_btn.click(
+                train_agent.train_gsm8k,
                 inputs=[
-                    parquet_file_path_input,
-                    grpo_req_sp_token_dropdown,
-                    grpo_req_prefix_input,
-                    grpo_resp_sp_token_dropdown,
-                    grpo_resp_prefix_input,
-                    grpo_temperature_input,
-                    grpo_top_p_input,
-                    grpo_presence_penalty_input,
-                    grpo_frequency_penalty_input,
-                    grpo_penalty_decay_input,
-                    grpo_max_resp_ctx_len_input,
+                    gsm8k_parquet_file_path_input,
+                    gsm8k_n_rollout_questions_input,
+                    gsm8k_req_sp_token_dropdown,
+                    gsm8k_req_prefix_input,
+                    gsm8k_resp_sp_token_dropdown,
+                    gsm8k_resp_prefix_input,
+                    gsm8k_temperature_input,
+                    gsm8k_top_p_input,
+                    gsm8k_presence_penalty_input,
+                    gsm8k_frequency_penalty_input,
+                    gsm8k_penalty_decay_input,
+                    gsm8k_max_resp_ctx_len_input,
                     grpo_lr_init_input,
                     grpo_lr_final_input,
                     grpo_lr_warmup_input,
                     grpo_accumulate_grad,
-                    grpo_n_save_ckpt_input,
-                    grpo_n_save_episode_input,
-                    grpo_num_rollouts_input,
-                    grpo_tiny_batch_size_input,
-                    grpo_train_batch_size_input,
+                    gsm8k_n_save_ckpt_input,
+                    gsm8k_n_save_episode_input,
+                    gsm8k_num_rollouts_input,
+                    gsm8k_tiny_batch_size_input,
+                    gsm8k_train_batch_size_input,
                 ],
                 outputs=[
                     train_output_info,
@@ -1338,6 +1445,52 @@ with gr.Blocks() as demo:
                     grpo_kl_curve_plot,
                 ],
             )
+            grpo_ourborous_run_btn.click(
+                train_agent.train_ourborous_rl,
+                inputs=[
+                    grpo_ourborous_dataset_input,
+                    grpo_ourborous_n_save_episode_ckpt_input,
+                    grpo_ourborous_train_batch_size_input,
+                    grpo_lr_init_input,
+                    grpo_lr_final_input,
+                    grpo_lr_warmup_input,
+                    grpo_accumulate_grad,
+                ],
+                outputs=[
+                    train_output_info,
+                    text_loss_curve_plot,
+                    grpo_reward_curve_plot,
+                    grpo_kl_curve_plot,
+                ]
+            )
+            grpo_dpo_pair_run_btn.click(
+                train_agent.train_grpo_pair_rl,
+                inputs=[
+                    grpo_dpo_pair_dataset_input,
+                    grpo_dpo_pair_n_samples_episode,
+                    grpo_dpo_pair_n_episodes,
+                    grpo_dpo_pair_system_sp_token_dropdown,
+                    grpo_dpo_pair_system_prefix_input,
+                    grpo_dpo_pair_req_sp_token_dropdown,
+                    grpo_dpo_pair_req_prefix_input,
+                    grpo_dpo_pair_resp_sp_token_dropdown,
+                    grpo_dpo_pair_resp_prefix_input,
+                    grpo_lr_init_input,
+                    grpo_lr_final_input,
+                    grpo_lr_warmup_input,
+                    grpo_accumulate_grad,
+                    grpo_dpo_pair_n_save_episode_ckpt_input,
+                    grpo_dpo_pair_train_batch_size_input,
+                ],
+                outputs=[
+                    train_output_info,
+                    text_loss_curve_plot,
+                    grpo_reward_curve_plot,
+                    grpo_kl_curve_plot,
+                ]
+            )
+
+
 
     demo.load(
         partial(load_user_preference, save_preference_dir, agent),
@@ -1383,26 +1536,41 @@ with gr.Blocks() as demo:
             fllr_n_save_ckpt_epoch_input,
             fllr_use_n_save_ckpt_step_checkbox,
             fllr_n_save_ckpt_step_input,
-            parquet_file_path_input,
-            grpo_req_sp_token_dropdown,
-            grpo_req_prefix_input,
-            grpo_resp_sp_token_dropdown,
-            grpo_resp_prefix_input,
-            grpo_n_save_ckpt_input,
-            grpo_max_resp_ctx_len_input,
-            grpo_tiny_batch_size_input,
-            grpo_num_rollouts_input,
-            grpo_train_batch_size_input,
-            grpo_n_save_episode_input,
+            gsm8k_parquet_file_path_input,
+            gsm8k_n_rollout_questions_input,
+            gsm8k_req_sp_token_dropdown,
+            gsm8k_req_prefix_input,
+            gsm8k_resp_sp_token_dropdown,
+            gsm8k_resp_prefix_input,
+            gsm8k_n_save_ckpt_input,
+            gsm8k_max_resp_ctx_len_input,
+            gsm8k_tiny_batch_size_input,
+            gsm8k_num_rollouts_input,
+            gsm8k_train_batch_size_input,
+            gsm8k_n_save_episode_input,
+            gsm8k_temperature_input,
+            gsm8k_top_p_input,
+            gsm8k_presence_penalty_input,
+            gsm8k_frequency_penalty_input,
+            gsm8k_penalty_decay_input,
+            grpo_ourborous_dataset_input,
+            grpo_ourborous_n_save_episode_ckpt_input,
+            grpo_ourborous_train_batch_size_input,
+            grpo_dpo_pair_dataset_input,
+            grpo_dpo_pair_n_samples_episode,
+            grpo_dpo_pair_n_episodes,
+            grpo_dpo_pair_system_sp_token_dropdown,
+            grpo_dpo_pair_system_prefix_input,
+            grpo_dpo_pair_req_sp_token_dropdown,
+            grpo_dpo_pair_req_prefix_input,
+            grpo_dpo_pair_resp_sp_token_dropdown,
+            grpo_dpo_pair_resp_prefix_input,
+            grpo_dpo_pair_n_save_episode_ckpt_input,
+            grpo_dpo_pair_train_batch_size_input,
             grpo_lr_init_input,
             grpo_lr_final_input,
             grpo_lr_warmup_input,
             grpo_accumulate_grad,
-            grpo_temperature_input,
-            grpo_top_p_input,
-            grpo_presence_penalty_input,
-            grpo_frequency_penalty_input,
-            grpo_penalty_decay_input,
             chat_operation_output,
         ],
     )
@@ -1447,26 +1615,41 @@ with gr.Blocks() as demo:
         fllr_n_save_ckpt_epoch_input,
         fllr_use_n_save_ckpt_step_checkbox,
         fllr_n_save_ckpt_step_input,
-        parquet_file_path_input,
-        grpo_req_sp_token_dropdown,
-        grpo_req_prefix_input,
-        grpo_resp_sp_token_dropdown,
-        grpo_resp_prefix_input,
-        grpo_n_save_ckpt_input,
-        grpo_max_resp_ctx_len_input,
-        grpo_tiny_batch_size_input,
-        grpo_num_rollouts_input,
-        grpo_train_batch_size_input,
-        grpo_n_save_episode_input,
+        gsm8k_parquet_file_path_input,
+        gsm8k_n_rollout_questions_input,
+        gsm8k_req_sp_token_dropdown,
+        gsm8k_req_prefix_input,
+        gsm8k_resp_sp_token_dropdown,
+        gsm8k_resp_prefix_input,
+        gsm8k_n_save_ckpt_input,
+        gsm8k_max_resp_ctx_len_input,
+        gsm8k_tiny_batch_size_input,
+        gsm8k_num_rollouts_input,
+        gsm8k_train_batch_size_input,
+        gsm8k_n_save_episode_input,
+        gsm8k_temperature_input,
+        gsm8k_top_p_input,
+        gsm8k_presence_penalty_input,
+        gsm8k_frequency_penalty_input,
+        gsm8k_penalty_decay_input,
+        grpo_ourborous_dataset_input,
+        grpo_ourborous_n_save_episode_ckpt_input,
+        grpo_ourborous_train_batch_size_input,
+        grpo_dpo_pair_dataset_input,
+        grpo_dpo_pair_n_samples_episode,
+        grpo_dpo_pair_n_episodes,
+        grpo_dpo_pair_system_sp_token_dropdown,
+        grpo_dpo_pair_system_prefix_input,
+        grpo_dpo_pair_req_sp_token_dropdown,
+        grpo_dpo_pair_req_prefix_input,
+        grpo_dpo_pair_resp_sp_token_dropdown,
+        grpo_dpo_pair_resp_prefix_input,
+        grpo_dpo_pair_n_save_episode_ckpt_input,
+        grpo_dpo_pair_train_batch_size_input,
         grpo_lr_init_input,
         grpo_lr_final_input,
         grpo_lr_warmup_input,
         grpo_accumulate_grad,
-        grpo_temperature_input,
-        grpo_top_p_input,
-        grpo_presence_penalty_input,
-        grpo_frequency_penalty_input,
-        grpo_penalty_decay_input,
     ]
     if not os.path.exists(save_preference_dir):
         demo.load(

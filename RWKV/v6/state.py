@@ -1,6 +1,7 @@
 import torch
 import copy
 
+
 class BlockState:
     def __init__(
         self,
@@ -40,6 +41,22 @@ class BlockStateList:
         # result.wkv_states[:, :, :, -1] = -1e38
         result.shift_states[:] = 0
         return result
+    
+    @staticmethod
+    def create_like(other, batch_size=None):
+        N, B, n_head, head_size, head_size = other.wkv_states.size()
+        _, _, _, C = other.shift_states.size()
+        if batch_size is not None:
+            B = batch_size
+        return BlockStateList.create(
+            N,
+            B,
+            C,
+            n_head,
+            head_size,
+            other.wkv_states.device,
+            other.wkv_states.dtype,
+        )
 
     @staticmethod
     def empty(N, B, C, n_head, head_size, device, dtype):
@@ -62,16 +79,6 @@ class BlockStateList:
         self.shift_states = self.shift_states
         return self
 
-    def batchof(self, batch_idx):
-        if not (0 <= batch_idx < self.wkv_states.size(1)):
-            raise ValueError(
-                f"dim_index 超出范围，应在 [0, batch_size: {self.wkv_states.size(1) - 1}] 之间。"
-            )
-        return BlockStateList(
-            self.shift_states[:, :, batch_idx : batch_idx + 1, :],
-            self.wkv_states[:, batch_idx : batch_idx + 1, :, :, :],
-        )
-
     def __getitem__(self, layer: int):
 
         if isinstance(layer, int):  # 保持原有的整数索引功能
@@ -86,10 +93,15 @@ class BlockStateList:
         else:
             raise TypeError(f"Invalid index type: {type(layer)}")
 
-        # return BlockState(
-        #     (self.shift_states[layer, 0], self.wkv_states[layer]),
-        #     (self.shift_states[layer, 1]),
-        # )
+    def batchof(self, batch_idx):
+        if not (0 <= batch_idx < self.wkv_states.size(1)):
+            raise ValueError(
+                f"dim_index 超出范围，应在 [0, batch_size: {self.wkv_states.size(1) - 1}] 之间。"
+            )
+        return BlockStateList(
+            self.shift_states[:, :, batch_idx : batch_idx + 1, :],
+            self.wkv_states[:, batch_idx : batch_idx + 1, :, :, :],
+        )
 
     def __add__(self, other):
         if other is None:

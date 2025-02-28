@@ -1,6 +1,8 @@
 from config import global_config
 import os
 from collections import OrderedDict
+import pyarrow.parquet as pq
+import pandas as pd
 
 config = (
     global_config.infer_service_config
@@ -187,21 +189,21 @@ class MultimodalDataset(Dataset):
         elif "data" in line_dict:
             line_clist = cList.from_v1_datset_dicts(line_dict["data"])
             for conversation in line_clist:
-                last_len= len(line_units)
+                last_len = len(line_units)
                 sos_tokens = global_config.role[conversation.role]["prefix"]
                 eos_tokens = global_config.role[conversation.role]["postfix"]
 
                 line_units += sos_tokens
                 c_str = conversation()
                 line_units += self.tokenize_func(c_str) + eos_tokens
-                
+
                 qa_mask = (
                     int(conversation.role in global_config.ego_types)
                     if self.qa_mask_on
                     else 1
                 )
-                line_masks += [1 * qa_mask] * (len(line_units)-last_len)
-                
+                line_masks += [1 * qa_mask] * (len(line_units) - last_len)
+
             line_units += [self.eod]
             line_masks += [0]
         # rwkv dataset
@@ -710,6 +712,7 @@ class RLGroupDataset(Dataset):
                 for j, choice in enumerate(choices):
                     score = choice["score"]
                     conversation_dict = choice["choice"]
+                    is_best = choice["is_best"]
                     conversations = cList.from_dicts(conversation_dict)
                     units, masks = self.encode_conversations_to_units(conversations)
                     turn_rollouts.append(
@@ -717,10 +720,124 @@ class RLGroupDataset(Dataset):
                             "units": units,
                             "masks": masks,
                             "score": score,
+                            "is_best": is_best,
                         }
                     )
 
                 turns.append(turn_rollouts)
             lines.append(turns)
 
+        return lines
+
+
+class RLPairDataset(Dataset):
+    def __init__(
+        self,
+        dataset_fp: str,
+        tokenizer,
+        n_samples_episode: int = 5,
+        n_episodes=5,
+        role_system="system",
+        system_prefix="System",
+        role_sender="conversation",
+        sender_prefix="Q",
+        role_replier="response",
+        replier_prefix="A",
+    ):
+        self.tokenizer = tokenizer
+        if dataset_fp.endswith(".parquet"):
+            self.table = pq.read_table(dataset_fp)
+            self.df = self.table.to_pandas()
+        elif dataset_fp.endswith(".jsonl"):
+            self.df = pd.read_json(dataset_fp, lines=True)
+        self.eod = 0
+        self.n_samples_episode = n_samples_episode
+        self.n_episodes = n_episodes
+        self.role_system = role_system
+        self.system_prefix = system_prefix
+        self.role_sender = role_sender
+        self.sender_prefix = sender_prefix
+        self.role_replier = role_replier
+        self.replier_prefix = replier_prefix
+
+    def __len__(self):
+        return len(self.df) // self.n_samples_episode
+
+    def __getitem__(self, idx):
+        lines = []
+        turns = []
+        for i in range(self.n_samples_episode * self.n_episodes):
+            row = self.df.iloc[idx + i]
+            system_prompt = row.get("system_prompt", None)
+            question = row["question"]
+            chosen = row["chosen"]
+            rejected = row["rejected"]
+
+            chosen_conversations = cList()
+            rejected_conversations = cList()
+            if system_prompt is not None:
+                chosen_conversations.append(
+                    Conversation(
+                        role=self.role_system,
+                        content=f"{self.system_prefix}: {system_prompt}",
+                    )
+                )
+                rejected_conversations.append(
+                    Conversation(
+                        role=self.role_system,
+                        content=f"{self.system_prefix}: {system_prompt}",
+                    )
+                )
+            chosen_conversations.append(
+                Conversation(
+                    role=self.role_sender,
+                    content=f"{self.sender_prefix}: {question}",
+                )
+            )
+            rejected_conversations.append(
+                Conversation(
+                    role=self.role_sender,
+                    content=f"{self.sender_prefix}: {question}",
+                )
+            )
+            chosen_conversations.append(
+                Conversation(
+                    role=self.role_replier,
+                    content=f"{self.replier_prefix}: {chosen}",
+                )
+            )
+            rejected_conversations.append(
+                Conversation(
+                    role=self.role_replier,
+                    content=f"{self.replier_prefix}: {rejected}",
+                )
+            )
+
+            chosen_tokens, chosen_masks = chosen_conversations.to_tokens(
+                self.tokenizer.encode, use_ego_mask=True
+            )
+            rejected_tokens, rejected_masks = rejected_conversations.to_tokens(
+                self.tokenizer.encode, use_ego_mask=True
+            )
+
+            turn_rollouts = [
+                {
+                    "units": chosen_tokens,
+                    "masks": chosen_masks,
+                    "score": 1,
+                    "is_best": True,
+                },
+                {
+                    "units": rejected_tokens,
+                    "masks": rejected_masks,
+                    "score": -1,
+                    "is_best": False,
+                },
+            ]
+
+            turns.append(turn_rollouts)
+            if (i + 1) % self.n_samples_episode == 0:
+                lines.append(turns)
+                turns = []
+    
         return lines

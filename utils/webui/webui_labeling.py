@@ -34,11 +34,10 @@ def display_round(round_key, choice_index):
         return "无数据", "", "", gr.update(maximum=0, value=0), 0, False
 
     choice = round_data[choice_index]
-    conversation_key = "best" if "best" in choice else "choice"
-    conversation = choice[conversation_key]
+    conversation = choice["choice"]
     score = choice["score"]
     safety = choice["safety"]
-    is_best = "best" in choice  # 判断当前项是否为最佳
+    is_best = choice["is_best"]  # 判断当前项是否为最佳
     conversation_text = "\n".join(
         [
             f"{item['role']}: "
@@ -53,7 +52,6 @@ def display_round(round_key, choice_index):
         gr.update(maximum=len(round_data) - 1, value=choice_index),
         is_best,  # 返回是否为最佳的状态
     )
-
 
 
 # 保存最佳选择
@@ -97,8 +95,7 @@ def update_round_data(round_key, choice_index, conversation_text, score, safety)
         for line in conversation_lines
     ]
 
-    conversation_key = "best" if "best" in round_data[choice_index] else "choice"
-    round_data[choice_index][conversation_key] = conversation
+    round_data[choice_index]["choice"] = conversation
     round_data[choice_index]["score"] = int(score) if score else None
     round_data[choice_index]["safety"] = int(safety) if safety else None
 
@@ -118,21 +115,19 @@ def save_best_as_dataset():
     for entry in history_data:
         for round_key, choices in entry.items():
             best_choice = next(
-                (choice for choice in choices if "best" in choice), choices[-1]
+                (choice for choice in choices if choice["is_best"]), choices[-1]
             )
             last_choice = choices[-1]
-            conversation_key = "best" if "best" in best_choice else "choice"
-            conversation_key_last = "best" if "best" in last_choice else "choice"
             collected_data["data"].append(
                 {
                     item["role"]: item["content"]
-                    for item in best_choice[conversation_key]
+                    for item in best_choice["choice"]
                 }
             )
             collected_data["last_choice"].append(
                 {
                     item["role"]: item["content"]
-                    for item in last_choice[conversation_key_last]
+                    for item in last_choice["choice"]
                 }
             )
 

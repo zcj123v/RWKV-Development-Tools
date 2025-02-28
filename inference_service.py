@@ -1,24 +1,26 @@
-import os,json
+import os, json
+
 os.environ["WORKING_MODE"] = "infer_service"
 
 from config import global_config
 
 infer_config = global_config.infer_service_config
 
-from bottle import route, run, request, response,Bottle
+from bottle import route, run, request, response, Bottle
 import threading
 from utils import inference_service_app
 from utils.message_manager import Conversation, cList
 import torch
+
 # from utils import batching_inference_helper
 
 host = global_config.server_config.infer.host
 port = global_config.server_config.infer.port
 
-infer_app=inference_service_app.InferenceAPP()
+infer_app = inference_service_app.InferenceAPP()
 
 
-app=Bottle()
+app = Bottle()
 
 
 def test():
@@ -89,19 +91,27 @@ def infer_batch_service():
     req = dict(request.json)
     tokens_list = req.get("tokens_list")  # 从请求中获取 tokens
     state_idx_list = req.get("state_idx_list", None)  # 可选的 state_idx
-    save_cache_dir = req.get("save_cache_dir", None)  # 可选的 state_idx
+    save_cache_dir = req.get("save_cache_dir", None)
+    save_to_now_state_idx = req.get("save_to_now_state_idx", None)  # 可选的 state_idx
     state = None
     if state_idx_list:
         for state_idx in state_idx_list:
             if state is None:
-                state = infer_app.states_pool[state_idx]
+                state = infer_app.states_pool.get(
+                    state_idx, device=next(infer_app.model.parameters()).device
+                )
             else:
-                state += infer_app.states_pool[state_idx]
+                state += infer_app.states_pool.get(
+                    state_idx, device=next(infer_app.model.parameters()).device
+                )
     # 调用 infer 函数进行推理
-    infer_app.infer_batch(
+    out, states, latent_out = infer_app.infer_batch(
         tokens_list, state, latent_output=True, save_cache_dir=save_cache_dir
     )
+    if save_to_now_state_idx:
+        infer_app.states_pool[save_to_now_state_idx] = states
     return {"message": "success"}
+
 
 def infer_service():
     req = dict(request.json)
@@ -112,7 +122,13 @@ def infer_service():
     save_folder = req.get("save_folder")
     save_name = req.get("save_name")
     save_to_now_state_idx = req.get("save_to_now_state_idx", None)  # 可选的 state_idx
-    state = infer_app.states_pool[state_idx] if state_idx else None
+    state = (
+        infer_app.states_pool.get(
+            state_idx, device=next(infer_app.model.parameters()).device
+        )
+        if state_idx
+        else None
+    )
     tokens = conversations.to_tokens(infer_app.tokenizer.encode)[0]
     # 调用 infer 函数进行推理
     (
@@ -134,7 +150,13 @@ def infer_tokens_service():
     save_folder = req.get("save_folder")
     save_name = req.get("save_name")
     save_to_now_state_idx = req.get("save_to_now_state_idx", None)  # 可选的 state_idx
-    state = infer_app.states_pool[state_idx] if state_idx else None
+    state = (
+        infer_app.states_pool.get(
+            state_idx, device=next(infer_app.model.parameters()).device
+        )
+        if state_idx
+        else None
+    )
     # 调用 infer 函数进行推理
     (
         logits,
@@ -144,9 +166,7 @@ def infer_tokens_service():
         infer_app.states_pool[save_to_now_state_idx] = state
     if save_logits:
         torch.save(logits.cpu(), os.path.join(save_folder, f"{save_name}.logits"))
-    # return {
-    #     "logits": logits.cpu().float().numpy().tolist(),
-    # }
+
     return {"message": "success"}
 
 
@@ -164,7 +184,6 @@ def batch_chat_service():
     save_to_now_state_idx_batch = req.get("save_to_now_state_idx", None)
     max_resp_len = req.get("max_resp_len", 512)
     token_ban = req.get("token_ban", [])
-
 
     speak_tokens_batch, speak_texts_batch = infer_app.batch_chat(
         start_with_tokens_batch=start_with_tokens_batch,
@@ -273,9 +292,9 @@ def estimate_desire_service():
     use_now_state_idx = req.get("use_now_state_idx", None)
 
     # 获取 target_tokens
-    target_tokens = global_config.role[target_role]["prefix"] + infer_app.tokenizer.encode(
-        target_prefix
-    )
+    target_tokens = global_config.role[target_role][
+        "prefix"
+    ] + infer_app.tokenizer.encode(target_prefix)
 
     hit = infer_app.estimate_desires(
         target_tokens=target_tokens,
@@ -289,30 +308,35 @@ def estimate_desire_service():
     return {"hit": hit}
 
 
-app.route("/test", method="GET",callback=test)
-app.route("/regist_state_id", method="POST",callback=regist_state_id_service)
-app.route("/remove_state_id", method="POST",callback=remove_state_id_service)
-app.route("/reset_state_id", method="POST",callback=reset_state_id)
-app.route("/load_weight", method="POST",callback=load_weight_service)
-app.route("/load_state", method="POST",callback=load_state_service)
-app.route("/save_state", method="POST",callback=save_state_service)
-app.route("/copy_state", method="POST",callback=copy_state_service)
-app.route("/infer_batch", method="POST",callback=infer_batch_service)
-app.route("/infer", method="POST",callback=infer_service)
-app.route("/infer_tokens", method="POST",callback=infer_tokens_service)
-app.route("/chat", method="POST",callback=chat_service)
-app.route("/batch_chat", method="POST",callback=batch_chat_service)
-app.route("/estimate_desire", method="POST",callback=estimate_desire_service)
+app.route("/test", method="GET", callback=test)
+app.route("/regist_state_id", method="POST", callback=regist_state_id_service)
+app.route("/remove_state_id", method="POST", callback=remove_state_id_service)
+app.route("/reset_state_id", method="POST", callback=reset_state_id)
+app.route("/load_weight", method="POST", callback=load_weight_service)
+app.route("/load_state", method="POST", callback=load_state_service)
+app.route("/save_state", method="POST", callback=save_state_service)
+app.route("/copy_state", method="POST", callback=copy_state_service)
+app.route("/infer_batch", method="POST", callback=infer_batch_service)
+app.route("/infer", method="POST", callback=infer_service)
+app.route("/infer_tokens", method="POST", callback=infer_tokens_service)
+app.route("/chat", method="POST", callback=chat_service)
+app.route("/batch_chat", method="POST", callback=batch_chat_service)
+app.route("/estimate_desire", method="POST", callback=estimate_desire_service)
+
 import time
+
+
 def run_server():
     # 启动 Bottle 服务器
     run(app, host=host, port=port)
+
+
 # def loop():
 #     while True:
 #         # 使用sleep就有线程运行时间
 #         infer_app.batch_helper.loop_step()
 #         time.sleep(0.0001)
-        
+
 run_server()
 
 

@@ -4,6 +4,7 @@ from dataclasses import dataclass, fields
 from typing import Optional, Self, List
 
 from utils.rl.grpo.functions import zero_pad_sequences
+from config import BlockStateList
 
 
 @dataclass
@@ -15,12 +16,13 @@ class ExperienceHist:
     advantages: Optional[torch.Tensor]  # 归一化的rewards
     action_mask: torch.Tensor  # 为0则不计算loss
     kl: Optional[torch.Tensor] = None  # 计算的kl
+    begin_with_states: BlockStateList = None
 
     def to(self, device: torch.device) -> Self:
         members = {}
         for field in fields(self):
             v = getattr(self, field.name)
-            if isinstance(v, torch.Tensor):
+            if isinstance(v, (torch.Tensor, BlockStateList)):
                 v = v.to(device=device)
             members[field.name] = v
         return ExperienceHist(**members)
@@ -45,7 +47,13 @@ class ExperienceHist:
             assert batch_size == len(vals)
             for i, v in enumerate(vals):
                 batch_data[i][key] = v
-
+        if self.begin_with_states is not None:
+            states = self.begin_with_states.unbind()
+            for i in range(batch_size):
+                batch_data[i]["begin_with_states"] = states[i]
+        else:
+            for i in range(batch_size):
+                batch_data[i]["begin_with_states"] = None
         return [ExperienceHist(**data) for data in batch_data]
 
     def __add__(self, other) -> List[Self]:
@@ -66,6 +74,19 @@ class ExperienceHist:
             else:
                 data = None
             batch_data[key] = data
+        states = [self.begin_with_states, other.begin_with_states]
+        # 找到第一个非None state
+        states_not_none = next((s for s in states if s is not None), None)
+        if states_not_none is None:
+            batch_data["begin_with_states"] = None
+        else:
+            bszs = [self.history_tokens.size(0), other.history_tokens.size(0)]
+            states = [
+                s if s is not None else BlockStateList.create_like(states_not_none, bsz)
+                for s, bsz in zip(states, bszs)
+            ]
+            states = sum(states[1:], states[0])
+            batch_data["begin_with_states"] = states
         return ExperienceHist(**batch_data)
 
     @staticmethod
@@ -90,6 +111,20 @@ class ExperienceHist:
             else:
                 data = None
             batch_data[key] = data
+
+        states = [item.begin_with_states for item in items]
+        # 找到第一个非None state
+        states_not_none = next((s for s in states if s is not None), None)
+        if states_not_none is None:
+            batch_data["begin_with_states"] = None
+        else:
+            bszs = [item.history_tokens.size(0) for item in items]
+            states = [
+                s if s is not None else BlockStateList.create_like(states_not_none, bsz)
+                for s, bsz in zip(states, bszs)
+            ]
+            states = sum(states[1:], states[0])
+            batch_data["begin_with_states"] = states
         return ExperienceHist(**batch_data)
 
 

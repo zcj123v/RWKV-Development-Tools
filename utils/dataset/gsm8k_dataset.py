@@ -148,9 +148,9 @@ class GSM8KRLDataset(GSM8KDataset):
         self,
         parquet_file_path,
         req_role="conversation",
-        req_prefix="Q: ",
+        req_prefix="Q",
         resp_role="response",
-        resp_prefix="A: ",
+        resp_prefix="A",
         tokenizer=None,
         ref_answer_prob=0.05,
     ):
@@ -262,13 +262,12 @@ batch_rewards: {rewards.tolist()}
                 (
                     Conversation(
                         self.req_role,
-                        self.req_prefix + question,
+                        f"{self.req_prefix}: {question}",
                     )
                     if random.random() > self.ref_answer_prob
                     else Conversation(
                         self.req_role,
-                        self.req_prefix
-                        + question
+                        f"{self.req_prefix}: {question}"
                         + f"(reference answer: {ground_truth})",
                     )
                 ),
@@ -276,7 +275,7 @@ batch_rewards: {rewards.tolist()}
         )
         resp_start_with_tokens = global_config.role[self.resp_role][
             "prefix"
-        ] + self.tokenizer.encode(self.resp_prefix)
+        ] + self.tokenizer.encode(f"{self.resp_prefix}:")
 
         return (
             input_conversations,

@@ -15,14 +15,14 @@ import uuid
 import json
 import re
 from utils import batching_inference_helper
-
+from utils.containers import LocalMemoryStatePool
 
 class InferenceAPP:
     def __init__(self):
         gc.collect()
         self.tokenizer = global_config.tokenizer_eval
         self.model = RWKV(infer_config)
-        self.states_pool = {}
+        self.states_pool = LocalMemoryStatePool(cache_dir=global_config.cache_dir)
         self.res_buffer = {}
         self.broadcast_host = global_config.server_config.infer.batching_broadcast_host
         self.broadcast_port = global_config.server_config.infer.batching_broadcast_port
@@ -42,15 +42,15 @@ class InferenceAPP:
         return state_id
 
     def save_state(self, state_id: str, to_dir: str):
-        if state_id in self.states_pool and self.states_pool[state_id]:
-            torch.save(self.states_pool[state_id], to_dir)
+        if state_id in self.states_pool:
+            self.states_pool.save(state_id,to_dir)
 
     def load_state(self, state_id: str, load_dir: str = None):
         try:
             self.states_pool[state_id] = torch.load(load_dir) if load_dir else None
         except:
             print(f"load state: state not found")
-            self.states_pool[state_id]
+            self.states_pool[state_id]=None
         print(f"load state id={state_id} from {load_dir}.")
 
     def remove_state_id(self, state_id: str):
@@ -88,7 +88,6 @@ class InferenceAPP:
     def block_infer(self, tokens, state, chunk_len=512):
         out = None
         tokens = [int(x) for x in tokens]
-        # print(f'### model ###\n{tokens}\n[{pipeline.decode(model_tokens)}]')
         while len(tokens) > 0:
             out, state = self.model.infer(tokens[:chunk_len], state)
             tokens = tokens[chunk_len:]

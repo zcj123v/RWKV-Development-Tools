@@ -32,6 +32,7 @@ class GRPOTrainer:
         self.ref_model_server = ref_model_server
         self.rwkv_policy = rwkv_policy
         self.tokenizer = tokenizer
+        self.state_idx = None
 
     @torch.no_grad()
     def rollout(
@@ -93,9 +94,9 @@ class GRPOTrainer:
 
         reward_func_ground_truth_batch = [reward_func_ground_truth] * num_rollouts
         req_text_batch = [input_conversations()] * num_rollouts
-        for k,v in kwargs.items():
+        for k, v in kwargs.items():
             kwargs[k] = [v] * num_rollouts
-        
+
         # reward_func: callable(List[List[int]], List[List[int]], List[Any]) -> Torch.FloatTensor[num_rollouts, 1]
         reward_batch = reward_func(
             req_text_batch,
@@ -139,11 +140,13 @@ class GRPOTrainer:
     def get_log_probs_ref(
         self,
         token_batch: torch.Tensor,
+        state_idx_list=None,
     ) -> torch.Tensor:
         token_batch_list = token_batch.tolist()
         package = {
             "tokens_list": token_batch_list,
             "save_cache_dir": f"{cache_dir}/infer_batch_logits.ckpt",
+            "state_idx_list": state_idx_list,
         }
         requests.post(
             self.ref_model_server + "/infer_batch",
@@ -161,6 +164,24 @@ class GRPOTrainer:
             output_ids=token_batch[:, 1:],
         )
         return log_probs
+
+    def request_state_idx(self):
+        resp = requests.post(
+            self.ref_model_server + "/regist_state_id",
+            json={},
+        ).json()
+        self.state_idx = resp["access_token"]
+
+    def update_ref_state(self, update_tokens, state_idx_list, to_state_idx):
+        package = {
+            "tokens_list": update_tokens,
+            "state_idx_list": state_idx_list,
+            "save_to_now_state_idx": to_state_idx,
+        }
+        requests.post(
+            self.ref_model_server + "/infer_batch",
+            json=package,
+        ).json()
 
     def train_reward_model(self, t_full_seq_batch, reward_batch, action_mask_batch):
         pass
@@ -245,7 +266,11 @@ class GRPOTrainer:
                 t_batch_tokens=t_full_seq_batch,
                 begin_with_states=begin_with_state,
             )
-            log_probs_ref = self.get_log_probs_ref(t_full_seq_batch)
+            if begin_with_state is not None:
+                self.request_state_idx()
+                state_idx_list = [self.state_idx] * len(num_rollouts)
+                self.update_ref_state(t_full_seq_batch, state_idx_list, self.state_idx)
+            log_probs_ref = self.get_log_probs_ref(t_full_seq_batch, self.state_idx)
             kl = kl_div(log_probs, log_probs_ref, action_mask_batch)
 
             exp = ExperienceHist(
@@ -256,6 +281,11 @@ class GRPOTrainer:
                 advantages=advantages_batch.cpu(),
                 action_mask=action_mask_batch.cpu(),
                 kl=kl if kl is None else kl.cpu(),
+                begin_with_states=(
+                    begin_with_state.duplicate(num_rollouts)
+                    if begin_with_state is not None
+                    else None
+                ),
             )
             replay_buffer.add(exp)
 

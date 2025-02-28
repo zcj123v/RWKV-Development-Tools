@@ -1,8 +1,10 @@
 {
     "ckpt_dir": "/home/li/MachineLr/datadisk/rwkv-checkpoints",
     "save_dataset_dir": "./dataset_collection",
+    "save_rl_dataset_dir": "./rl_dataset_collection",
     "tokenizer_train_dir": "./vocabs/rwkv_vocab_ourborous_eval.txt",
     "tokenizer_eval_dir": "./vocabs/rwkv_vocab_ourborous_eval.txt",
+    "cache_dir": "/home/li/MachineLr/ramdisk",
     "voice_on": false,
     "wandb_proj": "",
     "rwkv_version": "v6",
