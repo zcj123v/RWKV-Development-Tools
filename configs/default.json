@@ -108,14 +108,15 @@
             "dim_att": 0,
             "dim_ffn": 0,
             "layerwise_lr": 1,
-            "lr_init": 4e-5,
+            "lr_init": 2e-5,
             "warmup_steps": 0,
-            "lr_final": 4e-5,
+            "lr_final": 1e-6,
             "beta1": 0.9,
             "beta2": 0.99,
             "adam_eps": 1.0e-8,
             "optimzer_style": "adam",
             "adamw_mode": true,
+            "warmup_type": "linear",
             "my_pile_stage": 1
         },
         "dpo": {
