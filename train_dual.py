@@ -102,7 +102,8 @@ def test_inference(model, tokenizer):
             temperature=0.7,
             top_p=0.9,
             repetition_penalty=1.1,
-            stop_sequences=[[0]]  # 以0作为停止token
+            stop_sequences=[[0]],     # 以0作为停止token
+            tokenizer=tokenizer
         )
     
     # 解码生成的文本

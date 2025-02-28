@@ -88,11 +88,6 @@ class RWKV_Tmix_Dual(nn.Module):
             self.key = nn.Linear(C, C, bias=False)
             self.value = nn.Linear(C, C, bias=False)
             self.output = nn.Linear(C, C, bias=False)
-            # 层归一化，用于对注意力输出进行归一化处理
-            # H: 注意力头数量，作为分组数
-            # C: 嵌入维度，即特征通道数
-            # eps: 添加到分母的小常数，防止除零错误
-            #      根据head_size_divisor进行缩放，以适应不同的头大小
             self.ln_x = nn.GroupNorm(H, C, eps=(1e-5)*(head_size_divisor**2))  # !!! notice eps value !!!
         
     def forward(self, x, v_first=None, state=None, mode=RWKVMode.TRANSFORMER):
@@ -181,7 +176,7 @@ class RWKV_Tmix_Dual(nn.Module):
         返回:
             输出张量和更新的状态
         """
-        B, T, C = x.size()  # B: 批次大小(batch size), T: 序列长度(sequence length, 在RNN模式下为1), C: 嵌入维度(embedding dimension)
+        B, T, C = x.size()
         H = self.n_head
         N = self.head_size
         
@@ -290,11 +285,13 @@ class RWKV_Tmix_Dual(nn.Module):
         # 重塑输出
         out = out.reshape(B, C)
         
-        # 应用层归一化 - 修改为与 rnn.py 一致的方式
-        out = F.group_norm(out.view(B, H*N), num_groups=H, weight=self.ln_x.weight, bias=self.ln_x.bias, eps=self.ln_x.eps).view(B, C)
+        # 应用层归一化
+        out = self.ln_x(out)
         
         # 添加残差连接
-        out = out + ((r_reshaped * k_reshaped * self.r_k).sum(dim=-1, keepdim=True) * v_reshaped).view(B, C)
+        r_k = self.r_k.squeeze(0).squeeze(0).view(H, N)
+        residual = ((r_reshaped * k_reshaped * r_k).sum(dim=-1, keepdim=True) * v_reshaped).view(B, C)
+        out = out + residual
         
         # 应用输出变换
         out = self.output(out * g)

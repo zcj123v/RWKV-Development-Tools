@@ -9,7 +9,7 @@ if importlib.util.find_spec('deepspeed'):
     import deepspeed
     from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 import types
-from RWKV.v7.state import BlockStateList,BlockState, TimeMixState, ChannelMixState
+from RWKV.v7.experimental.state import BlockStateList,BlockState, TimeMixState, ChannelMixState
 from typing import Union, Optional, List
 from fla.ops.rwkv7 import chunk_rwkv7
 

@@ -76,16 +76,23 @@ class RWKV_CMix_Dual(nn.Module):
         assert T == 1, "RNN模式只支持序列长度为1的输入"
         
         # 获取当前层的状态
+        if self.layer_id >= len(state.layer_states):
+            raise ValueError(f"状态中缺少层 {self.layer_id} 的信息")
+            
         layer_state = state.layer_states[self.layer_id]['ffn']
         x_prev = layer_state['x_prev']
         
         # 从3D张量 [B, 1, C] 转换为2D张量 [B, C]
         x = x.squeeze(1)
         
-        # 实现RNN模式的前向传播逻辑
+        # 实现RNN模式的前向传播逻辑，参考rnn.py中的channel_mixing函数
         xx = x_prev - x
         k = x + xx * self.x_k.squeeze(0).squeeze(0)
+        
+        # 确保使用与rnn.py相同的计算方式
         k = torch.relu(self.key(k)) ** 2
+        
+        # 计算输出
         output = self.value(k)
         
         # 更新状态

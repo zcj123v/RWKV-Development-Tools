@@ -1,4 +1,4 @@
-# RWKV v7 双模态设计
+# RWKV v7 双模式设计
 
 RWKV v7 双模态设计是一种创新的架构，允许模型在两种不同的操作模式之间无缝切换：
 
@@ -220,4 +220,3 @@ generated_text = model.generate_with_streaming(
 
 - [RWKV官方仓库](https://github.com/BlinkDL/RWKV-LM)
 - [RWKV论文](https://arxiv.org/abs/2305.13048)
-- [双模态设计技术报告](https://blog.rwkv.com/p/dual-mode-design)

@@ -654,11 +654,16 @@ def generate(
     prompt,
     max_new_tokens=100,
     temperature=1.0,
-    top_p=0.9,
+    top_p=0.85,
     top_k=0,
     repetition_penalty=1.0,
+    alpha_presence=0.2,
+    alpha_frequency=0.2,
+    alpha_decay=0.996,
+    token_ban=[],
+    token_stop=[11],  # 默认使用11作为停止token
     streaming_callback=None,
-    stop_sequences=None,
+    tokenizer=None,
     **kwargs
 ):
     """
@@ -671,9 +676,13 @@ def generate(
         temperature: 采样温度
         top_p: 核采样的概率阈值
         top_k: 采样时考虑的最高概率token数
-        repetition_penalty: 重复惩罚系数
+        repetition_penalty: 重复惩罚系数（已弃用，使用alpha参数代替）
+        alpha_presence: 基础重复惩罚系数
+        alpha_frequency: 频率重复惩罚系数
+        alpha_decay: 重复惩罚衰减系数
+        token_ban: 禁止生成的token列表
+        token_stop: 停止生成的token列表
         streaming_callback: 流式回调函数，接收新生成的token
-        stop_sequences: 停止生成的序列列表
         **kwargs: 传递给模型的其他参数
         
     返回:
@@ -706,14 +715,8 @@ def generate(
     # 初始化生成结果
     generated_ids = input_ids.tolist() if isinstance(input_ids, torch.Tensor) else list(input_ids)
     
-    # 初始化停止标志
-    stop_sequences_ids = []
-    if stop_sequences and hasattr(model, 'tokenizer'):
-        for seq in stop_sequences:
-            if isinstance(seq, str):
-                stop_sequences_ids.append(model.tokenizer.encode(seq))
-            else:
-                stop_sequences_ids.append(seq)
+    # 初始化token出现次数统计
+    occurrence = {}
     
     # 生成新token
     for _ in range(max_new_tokens):
@@ -724,31 +727,47 @@ def generate(
         with torch.no_grad():
             logits, state = model._forward_rnn(current_token, state, return_state=True)
         
+        # 获取最后一个位置的logits
+        last_logits = logits[0, 0, :]
+        
         # 应用重复惩罚
-        if repetition_penalty != 1.0:
-            for id in set(generated_ids[-50:]):  # 只考虑最近的50个token
-                logits[0, 0, id] /= repetition_penalty
+        for token in occurrence:
+            occurrence[token] *= alpha_decay
+            last_logits[token] -= alpha_presence + occurrence[token] * alpha_frequency
+        
+        # 应用token黑名单
+        for token in token_ban:
+            last_logits[token] = -1e38
         
         # 采样下一个token
-        next_token = sample_logits(logits, temperature, top_p, top_k)
-        next_token_id = next_token.item()
+        if temperature == 0:
+            # 贪婪解码
+            next_token_id = torch.argmax(last_logits).item()
+        else:
+            # 使用functions.py中的sample_logits函数
+            next_token_id = sample_logits(last_logits, temperature, top_p, top_k)
+        
+        # 更新token出现统计
+        if 49 <= next_token_id <= 58:  # 数字token特殊处理
+            pass
+        elif next_token_id not in occurrence:
+            occurrence[next_token_id] = 1
+        else:
+            occurrence[next_token_id] += 1
         
         # 添加到生成结果
+        next_token_id = next_token_id.item()
         generated_ids.append(next_token_id)
         
         # 调用流式回调（如果提供）
         if streaming_callback is not None:
             streaming_callback(next_token_id)
+        else:
+            print(tokenizer.decode([next_token_id]), end="")
         
-        # 检查是否生成了结束标记
-        if hasattr(model, 'tokenizer') and next_token_id in [11]:
+        # 检查是否生成了停止token
+        if next_token_id in token_stop:
             break
-        
-        # 检查是否生成了停止序列
-        if stop_sequences_ids:
-            for stop_seq in stop_sequences_ids:
-                if len(generated_ids) >= len(stop_seq) and generated_ids[-len(stop_seq):] == stop_seq:
-                    break
         
         # 定期清理GPU内存
         if _ % 50 == 0:
